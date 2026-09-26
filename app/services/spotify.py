@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from dataclasses import dataclass
 from typing import Any
+
+from spotdl.types.album import Album
+from spotdl.types.playlist import Playlist
+from spotdl.types.song import Song
 
 
 @dataclass(slots=True)
@@ -23,6 +25,7 @@ class SpotifyResolverError(RuntimeError):
 
 
 def _extract_json_payload(stdout: str) -> Any:
+    """Compatibility parser kept for old saved spotDL output and tests."""
     text = (stdout or "").strip()
     if not text:
         raise SpotifyResolverError("spotDL tidak mengembalikan metadata.")
@@ -54,7 +57,7 @@ def _to_track(item: dict[str, Any]) -> SpotifyTrack | None:
     duration = item.get("duration")
     try:
         duration_f = float(duration) if duration is not None else None
-        if duration_f and duration_f > 10_000:  # milliseconds in some payloads
+        if duration_f and duration_f > 10_000:
             duration_f /= 1000.0
     except (TypeError, ValueError):
         duration_f = None
@@ -64,36 +67,59 @@ def _to_track(item: dict[str, Any]) -> SpotifyTrack | None:
     return SpotifyTrack(title=title, artist=artist, duration=duration_f)
 
 
-def resolve_spotify(url: str, timeout: int = 120) -> list[SpotifyTrack]:
-    """Resolve Spotify metadata with spotDL. No Spotify audio/DRM is accessed."""
-    cmd = [sys.executable, "-m", "spotdl", "save", url, "--save-file", "-"]
+def _song_to_track(song: Song) -> SpotifyTrack:
+    artists = getattr(song, "artists", None) or []
+    artist = ", ".join(str(x).strip() for x in artists if str(x).strip())
+    if not artist:
+        artist = str(getattr(song, "artist", "") or "").strip()
+
+    duration_raw = getattr(song, "duration", None)
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SpotifyResolverError(f"Gagal menjalankan spotDL: {exc}") from exc
+        duration = float(duration_raw) if duration_raw is not None else None
+    except (TypeError, ValueError):
+        duration = None
 
-    if proc.returncode != 0:
-        message = (proc.stderr or proc.stdout or "spotDL gagal").strip()
-        raise SpotifyResolverError(message[-700:])
+    return SpotifyTrack(
+        title=str(getattr(song, "name", "") or "").strip(),
+        artist=artist,
+        duration=duration,
+    )
 
-    payload = _extract_json_payload(proc.stdout)
-    if isinstance(payload, dict):
-        items = payload.get("songs") or payload.get("tracks") or [payload]
-    elif isinstance(payload, list):
-        items = payload
-    else:
-        items = []
 
-    tracks = [_to_track(x) for x in items if isinstance(x, dict)]
-    result = [x for x in tracks if x is not None]
+def resolve_spotify(url: str, timeout: int = 120) -> list[SpotifyTrack]:
+    """Resolve Spotify metadata in-process.
+
+    This intentionally does not download Spotify audio or bypass DRM. spotDL's
+    Spotify metadata layer is used only to obtain artist/title/duration, after
+    which the normal matcher searches a supported audio source.
+
+    Running in-process is important for the portable Windows build: when the
+    application is frozen, ``sys.executable`` points at our EXE rather than a
+    Python interpreter, so ``python -m spotdl`` would not work.
+    """
+    del timeout  # kept for API compatibility with the previous subprocess version
+    normalized = (url or "").strip()
+    if not normalized:
+        raise SpotifyResolverError("URL Spotify kosong.")
+
+    try:
+        if "/playlist/" in normalized:
+            _, songs = Playlist.get_metadata(normalized)
+        elif "/album/" in normalized:
+            _, songs = Album.get_metadata(normalized)
+        elif "/track/" in normalized:
+            songs = [Song.from_url(normalized)]
+        else:
+            raise SpotifyResolverError(
+                "Jenis URL Spotify belum didukung. Gunakan link track, album, atau playlist."
+            )
+    except SpotifyResolverError:
+        raise
+    except Exception as exc:
+        raise SpotifyResolverError(f"Gagal membaca metadata Spotify: {exc}") from exc
+
+    tracks = [_song_to_track(song) for song in songs]
+    result = [track for track in tracks if track.title]
     if not result:
         raise SpotifyResolverError("Tidak ada lagu Spotify yang berhasil dibaca.")
     return result
