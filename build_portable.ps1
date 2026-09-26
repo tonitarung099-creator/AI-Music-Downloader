@@ -26,6 +26,7 @@ Write-Host "[1/6] Building one-folder EXE with PyInstaller..."
     --name "AI Music Downloader" `
     --collect-all spotdl `
     --collect-all yt_dlp `
+    --collect-all pykakasi `
     --hidden-import spotdl.types.song `
     --hidden-import spotdl.types.album `
     --hidden-import spotdl.types.playlist `
@@ -52,11 +53,16 @@ New-Item -ItemType Directory -Path (Join-Path $PackageDir "downloads") | Out-Nul
 New-Item -ItemType Directory -Path (Join-Path $PackageDir "data") | Out-Null
 Copy-Item (Join-Path $Root "config.example.json") (Join-Path $PackageDir "config.example.json") -Force
 
+$PykakasiDb = Join-Path $PackageDir "_internal\pykakasi\data\kanwadict4.db"
+if (-not (Test-Path $PykakasiDb)) {
+    throw "Data runtime pykakasi tidak ikut terbundle: $PykakasiDb"
+}
+
 Write-Host "[3/6] Running frozen EXE self-test..."
 $PortableExe = Join-Path $PackageDir "AI Music Downloader.exe"
-& $PortableExe --self-test
-if ($LASTEXITCODE -ne 0) {
-    throw "Self-test EXE portable gagal dengan exit code $LASTEXITCODE"
+$SelfTest = Start-Process -FilePath $PortableExe -ArgumentList "--self-test" -Wait -PassThru
+if ($SelfTest.ExitCode -ne 0) {
+    throw "Self-test EXE portable gagal dengan exit code $($SelfTest.ExitCode)"
 }
 Write-Host "FROZEN_EXE_SELF_TEST_OK"
 
@@ -113,7 +119,8 @@ Write-Host "[5/6] Verifying package..."
 $Required = @(
     (Join-Path $PackageDir "AI Music Downloader.exe"),
     (Join-Path $PackageDir "tools\ffmpeg.exe"),
-    (Join-Path $PackageDir "README_PORTABLE.txt")
+    (Join-Path $PackageDir "README_PORTABLE.txt"),
+    $PykakasiDb
 )
 foreach ($Item in $Required) {
     if (-not (Test-Path $Item)) {
