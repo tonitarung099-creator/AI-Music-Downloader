@@ -1,4 +1,3 @@
 PySide6
 yt-dlp
 spotdl
-google-genai
