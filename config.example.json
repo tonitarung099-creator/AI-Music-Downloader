@@ -1,0 +1,7 @@
+{
+  "output_dir": "downloads",
+  "audio_mode": "original",
+  "gemini_model": "gemini-2.5-flash",
+  "gemini_api_keys": [],
+  "max_retries": 2
+}
