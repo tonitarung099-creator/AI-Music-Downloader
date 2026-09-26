@@ -150,7 +150,6 @@ class QueueWorker(QThread):
     def run(self) -> None:
         done = failed = cancelled = 0
         for row, track in enumerate(self.tracks):
-            # Never redownload a completed item when Start/Retry is pressed again.
             if track.status == TrackStatus.DONE:
                 continue
 
@@ -203,6 +202,11 @@ class QueueWorker(QThread):
                     cancelled += 1
                     break
                 except Exception as exc:
+                    if self.stop_event.is_set():
+                        track.status = TrackStatus.CANCELLED
+                        self.item_changed.emit(row, track.status.value, track.progress, "Dibatalkan")
+                        cancelled += 1
+                        break
                     last_error = str(exc)
                     if attempt + 1 < attempts:
                         self.item_changed.emit(row, "Mencoba lagi", track.progress, f"Retry {attempt + 1}/{attempts - 1}")
