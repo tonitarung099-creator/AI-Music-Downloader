@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 
+def _application_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def _prepare_portable_tools() -> None:
     """Expose bundled command-line tools without requiring system installs."""
-    if getattr(sys, "frozen", False):
-        root = Path(sys.executable).resolve().parent
-    else:
-        root = Path(__file__).resolve().parent
-
-    tools = root / "tools"
+    tools = _application_root() / "tools"
     if not tools.exists():
         return
 
@@ -38,10 +40,18 @@ def main() -> int:
     window = MainWindow()
 
     if "--self-test" in sys.argv:
-        # Used by the Windows portable build to verify that the frozen EXE can
-        # load Qt plus all application imports without entering the event loop.
+        # Verify the frozen package can import the full UI and can see the
+        # bundled external runtimes required for actual downloads.
         if window.windowTitle() != "AI Music Downloader":
             return 2
+        if getattr(sys, "frozen", False):
+            tools = _application_root() / "tools"
+            if not (tools / "ffmpeg.exe").exists():
+                return 3
+            if not (tools / "deno.exe").exists():
+                return 4
+            if shutil.which("deno") is None:
+                return 5
         window.close()
         return 0
 
