@@ -17,7 +17,7 @@ def app_root() -> Path:
 class AppConfig:
     output_dir: str = str(app_root() / "downloads")
     audio_mode: str = "original"
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
     gemini_api_keys: list[str] = field(default_factory=list)
     max_retries: int = 2
 
@@ -36,7 +36,7 @@ class AppConfig:
                     if key in raw:
                         setattr(cfg, key, raw[key])
                 if isinstance(raw.get("gemini_api_keys"), list):
-                    cfg.gemini_api_keys = [str(x).strip() for x in raw["gemini_api_keys"] if str(x).strip()]
+                    cfg.gemini_api_keys = [str(x).strip() for x in raw["gemini_api_keys"] if str(x).strip()][:100]
             except (OSError, json.JSONDecodeError):
                 pass
 
