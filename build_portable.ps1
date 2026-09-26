@@ -17,7 +17,7 @@ foreach ($Path in @($BuildDir, $DistDir, $ReleaseDir)) {
 New-Item -ItemType Directory -Path $BuildDir | Out-Null
 New-Item -ItemType Directory -Path $ReleaseDir | Out-Null
 
-Write-Host "[1/5] Building one-folder EXE with PyInstaller..."
+Write-Host "[1/6] Building one-folder EXE with PyInstaller..."
 & python -m PyInstaller `
     --noconfirm `
     --clean `
@@ -39,11 +39,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $BuiltApp = Join-Path $DistDir "AI Music Downloader"
-if (-not (Test-Path (Join-Path $BuiltApp "AI Music Downloader.exe"))) {
+$BuiltExe = Join-Path $BuiltApp "AI Music Downloader.exe"
+if (-not (Test-Path $BuiltExe)) {
     throw "Hasil build EXE tidak ditemukan."
 }
 
-Write-Host "[2/5] Preparing portable folder..."
+Write-Host "[2/6] Preparing portable folder..."
 New-Item -ItemType Directory -Path $PackageDir | Out-Null
 Copy-Item (Join-Path $BuiltApp "*") $PackageDir -Recurse -Force
 New-Item -ItemType Directory -Path (Join-Path $PackageDir "tools") | Out-Null
@@ -51,7 +52,15 @@ New-Item -ItemType Directory -Path (Join-Path $PackageDir "downloads") | Out-Nul
 New-Item -ItemType Directory -Path (Join-Path $PackageDir "data") | Out-Null
 Copy-Item (Join-Path $Root "config.example.json") (Join-Path $PackageDir "config.example.json") -Force
 
-Write-Host "[3/5] Downloading portable FFmpeg essentials..."
+Write-Host "[3/6] Running frozen EXE self-test..."
+$PortableExe = Join-Path $PackageDir "AI Music Downloader.exe"
+& $PortableExe --self-test
+if ($LASTEXITCODE -ne 0) {
+    throw "Self-test EXE portable gagal dengan exit code $LASTEXITCODE"
+}
+Write-Host "FROZEN_EXE_SELF_TEST_OK"
+
+Write-Host "[4/6] Downloading portable FFmpeg essentials..."
 $FfmpegZip = Join-Path $BuildDir "ffmpeg.zip"
 $FfmpegExtract = Join-Path $BuildDir "ffmpeg"
 $FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
@@ -100,7 +109,7 @@ FFmpeg adalah proyek pihak ketiga dan memiliki lisensi tersendiri: https://ffmpe
 "@
 Set-Content -Path (Join-Path $PackageDir "README_PORTABLE.txt") -Value $PortableReadme -Encoding UTF8
 
-Write-Host "[4/5] Verifying package..."
+Write-Host "[5/6] Verifying package..."
 $Required = @(
     (Join-Path $PackageDir "AI Music Downloader.exe"),
     (Join-Path $PackageDir "tools\ffmpeg.exe"),
@@ -112,7 +121,7 @@ foreach ($Item in $Required) {
     }
 }
 
-Write-Host "[5/5] Creating ZIP..."
+Write-Host "[6/6] Creating ZIP..."
 Compress-Archive -Path $PackageDir -DestinationPath $ZipPath -CompressionLevel Optimal -Force
 
 $ZipInfo = Get-Item $ZipPath
