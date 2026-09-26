@@ -143,9 +143,24 @@ class QueueWorker(QThread):
         self.pause_event.clear()
         self.log.emit("Menghentikan antrean...")
 
+    def _wait_while_paused(self) -> None:
+        while self.pause_event.is_set() and not self.stop_event.is_set():
+            self.stop_event.wait(0.2)
+
     def run(self) -> None:
         done = failed = cancelled = 0
         for row, track in enumerate(self.tracks):
+            # Never redownload a completed item when Start/Retry is pressed again.
+            if track.status == TrackStatus.DONE:
+                continue
+
+            if self.stop_event.is_set():
+                track.status = TrackStatus.CANCELLED
+                self.item_changed.emit(row, track.status.value, track.progress, "Dibatalkan")
+                cancelled += 1
+                continue
+
+            self._wait_while_paused()
             if self.stop_event.is_set():
                 track.status = TrackStatus.CANCELLED
                 self.item_changed.emit(row, track.status.value, track.progress, "Dibatalkan")
@@ -158,6 +173,7 @@ class QueueWorker(QThread):
             for attempt in range(attempts):
                 if self.stop_event.is_set():
                     break
+                self._wait_while_paused()
 
                 try:
                     def progress(pct: float, detail: str, r=row) -> None:
@@ -165,7 +181,8 @@ class QueueWorker(QThread):
                         status = TrackStatus.PAUSED.value if self.pause_event.is_set() else track.status.value
                         self.item_changed.emit(r, status, pct, detail)
 
-                    self.item_changed.emit(row, TrackStatus.SEARCHING.value, 0.0, "Menyiapkan...")
+                    track.status = TrackStatus.SEARCHING
+                    self.item_changed.emit(row, track.status.value, 0.0, "Menyiapkan...")
                     self.engine.download(
                         track,
                         output_dir=self.config.output_dir,
