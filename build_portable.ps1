@@ -84,11 +84,17 @@ $DenoSumUrl = "$DenoUrl.sha256sum"
 Invoke-WebRequest -Uri $DenoUrl -OutFile $DenoZip -UseBasicParsing
 Invoke-WebRequest -Uri $DenoSumUrl -OutFile $DenoSum -UseBasicParsing
 
-$ExpectedDenoHash = ((Get-Content $DenoSum -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+$DenoSumText = Get-Content $DenoSum -Raw
+$DenoHashMatch = [regex]::Match($DenoSumText, '(?i)\b[a-f0-9]{64}\b')
+if (-not $DenoHashMatch.Success) {
+    throw "Checksum SHA-256 Deno tidak dapat dibaca dari file checksum."
+}
+$ExpectedDenoHash = $DenoHashMatch.Value.ToLowerInvariant()
 $ActualDenoHash = (Get-FileHash -Path $DenoZip -Algorithm SHA256).Hash.ToLowerInvariant()
-if (-not $ExpectedDenoHash -or $ExpectedDenoHash -ne $ActualDenoHash) {
+if ($ExpectedDenoHash -ne $ActualDenoHash) {
     throw "Checksum Deno tidak cocok. Expected=$ExpectedDenoHash Actual=$ActualDenoHash"
 }
+Write-Host "DENO_SHA256_OK: $ActualDenoHash"
 
 Expand-Archive -Path $DenoZip -DestinationPath $DenoExtract -Force
 $DenoExe = Get-ChildItem $DenoExtract -Filter "deno.exe" -Recurse | Select-Object -First 1
