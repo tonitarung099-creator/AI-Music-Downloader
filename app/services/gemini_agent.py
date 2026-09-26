@@ -4,11 +4,9 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
-
-try:
-    from google import genai
-except ImportError:  # pragma: no cover
-    genai = None
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from app.services.matcher import Candidate
 
@@ -20,16 +18,22 @@ class GeminiResult:
 
 
 class GeminiAgent:
-    """Optional helper. The downloader never requires Gemini to function."""
+    """Optional Gemini helper using the official REST API.
 
-    def __init__(self, api_keys: list[str] | None = None, model: str = "gemini-2.5-flash") -> None:
+    The download engine never depends on Gemini to function. API keys are
+    rotated when a request fails or a key is rate-limited.
+    """
+
+    API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    def __init__(self, api_keys: list[str] | None = None, model: str = "gemini-3.8-flash") -> None:
         self.api_keys = [k.strip() for k in (api_keys or []) if k.strip()][:100]
         self.model = model
         self._cursor = 0
 
     @property
     def available(self) -> bool:
-        return bool(self.api_keys) and genai is not None
+        return bool(self.api_keys)
 
     def update_keys(self, api_keys: list[str]) -> None:
         self.api_keys = [k.strip() for k in api_keys if k.strip()][:100]
@@ -53,25 +57,62 @@ class GeminiAgent:
             except json.JSONDecodeError:
                 return None
 
+    @staticmethod
+    def _response_text(payload: dict[str, Any]) -> str:
+        candidates = payload.get("candidates") or []
+        if not candidates:
+            return ""
+        parts = ((candidates[0].get("content") or {}).get("parts") or [])
+        return "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
+
+    def _request_text(self, api_key: str, prompt: str) -> str:
+        model = quote(self.model.strip(), safe="-._")
+        url = f"{self.API_ROOT}/{model}:generateContent"
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
+        }
+        request = Request(
+            url,
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
+            method="POST",
+        )
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return self._response_text(payload)
+
     def _generate_json(self, prompt: str) -> GeminiResult:
         if not self.available:
             return GeminiResult(None, "Gemini belum dikonfigurasi.")
 
         last_error = ""
-        attempts = len(self.api_keys)
-        for _ in range(attempts):
+        for _ in range(len(self.api_keys)):
             key = self.api_keys[self._cursor % len(self.api_keys)]
             self._cursor = (self._cursor + 1) % len(self.api_keys)
             try:
-                client = genai.Client(api_key=key)
-                response = client.models.generate_content(model=self.model, contents=prompt)
-                data = self._extract_json(getattr(response, "text", ""))
+                text = self._request_text(key, prompt)
+                data = self._extract_json(text)
                 if data is not None:
                     return GeminiResult(data)
                 last_error = "Respons Gemini bukan JSON yang valid."
-            except Exception as exc:  # provider errors vary by SDK version
+            except HTTPError as exc:
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    detail = ""
+                last_error = f"HTTP {exc.code}: {detail or exc.reason}"
+            except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                 last_error = str(exc)
-                continue
+            except Exception as exc:
+                last_error = str(exc)
+
         return GeminiResult(None, last_error or "Semua API key Gemini gagal.")
 
     def parse_command(self, command: str) -> GeminiResult:
@@ -99,13 +140,13 @@ Perintah pengguna:
             return None
 
         rows = []
-        for i, c in enumerate(candidates[:6]):
+        for i, candidate in enumerate(candidates[:6]):
             rows.append({
                 "index": i,
-                "title": c.title,
-                "channel": c.uploader,
-                "duration_seconds": c.duration,
-                "local_score": round(c.score, 3),
+                "title": candidate.title,
+                "channel": candidate.uploader,
+                "duration_seconds": candidate.duration,
+                "local_score": round(candidate.score, 3),
             })
 
         prompt = f"""
