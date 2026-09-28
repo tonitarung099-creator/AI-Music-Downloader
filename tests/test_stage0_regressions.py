@@ -17,9 +17,6 @@ from app.services.spotify import SpotifyResolverError
 from app.workers import ImportWorker, QueueWorker
 
 
-KNOWN_STAGE0 = pytest.mark.xfail(strict=True)
-
-
 def test_f01_spotify_resolver_bootstraps_client_before_metadata(monkeypatch):
     state = {"initialized": False, "init_calls": 0}
 
@@ -138,7 +135,6 @@ def test_f08_null_config_falls_back_to_defaults(tmp_path, monkeypatch):
     assert cfg.max_retries == 2
 
 
-@KNOWN_STAGE0(reason="F10: hasil Gemini belum divalidasi sebagai CommandPlan sebelum dipakai UI")
 def test_f10_parse_command_rejects_invalid_quality_shape(monkeypatch):
     agent = GeminiAgent(["fixture-key"])
     monkeypatch.setattr(
@@ -147,9 +143,12 @@ def test_f10_parse_command_rejects_invalid_quality_shape(monkeypatch):
         lambda prompt, **kwargs: GeminiResult(
             {
                 "intent": "add_and_download",
+                "scope": "add_and_download",
                 "queries": ["Artist - Song"],
                 "quality": ["mp3"],
                 "avoid": ["live"],
+                "prefer": [],
+                "target_job_ids": [],
             }
         ),
     )
