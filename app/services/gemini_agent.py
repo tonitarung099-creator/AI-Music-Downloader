@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -25,6 +26,7 @@ class GeminiAgent:
     """
 
     API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
+    REQUEST_TIMEOUT_SECONDS = 15
 
     def __init__(self, api_keys: list[str] | None = None, model: str = "gemini-3.8-flash") -> None:
         self.api_keys = [k.strip() for k in (api_keys or []) if k.strip()][:100]
@@ -84,20 +86,29 @@ class GeminiAgent:
             },
             method="POST",
         )
-        with urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=self.REQUEST_TIMEOUT_SECONDS) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return self._response_text(payload)
 
-    def _generate_json(self, prompt: str) -> GeminiResult:
+    def _generate_json(
+        self,
+        prompt: str,
+        cancel_event: threading.Event | None = None,
+    ) -> GeminiResult:
         if not self.available:
             return GeminiResult(None, "Gemini belum dikonfigurasi.")
 
         last_error = ""
         for _ in range(len(self.api_keys)):
+            if cancel_event is not None and cancel_event.is_set():
+                return GeminiResult(None, "Permintaan Gemini dibatalkan.")
+
             key = self.api_keys[self._cursor % len(self.api_keys)]
             self._cursor = (self._cursor + 1) % len(self.api_keys)
             try:
                 text = self._request_text(key, prompt)
+                if cancel_event is not None and cancel_event.is_set():
+                    return GeminiResult(None, "Permintaan Gemini dibatalkan.")
                 data = self._extract_json(text)
                 if data is not None:
                     return GeminiResult(data)
@@ -113,9 +124,15 @@ class GeminiAgent:
             except Exception as exc:
                 last_error = str(exc)
 
+        if cancel_event is not None and cancel_event.is_set():
+            return GeminiResult(None, "Permintaan Gemini dibatalkan.")
         return GeminiResult(None, last_error or "Semua API key Gemini gagal.")
 
-    def parse_command(self, command: str) -> GeminiResult:
+    def parse_command(
+        self,
+        command: str,
+        cancel_event: threading.Event | None = None,
+    ) -> GeminiResult:
         prompt = f"""
 Kamu adalah parser perintah untuk aplikasi downloader musik desktop.
 Balas HANYA JSON valid, tanpa markdown.
@@ -133,9 +150,14 @@ Skema:
 Perintah pengguna:
 {command}
 """.strip()
-        return self._generate_json(prompt)
+        return self._generate_json(prompt, cancel_event=cancel_event)
 
-    def choose_candidate(self, query: str, candidates: list[Candidate]) -> int | None:
+    def choose_candidate(
+        self,
+        query: str,
+        candidates: list[Candidate],
+        cancel_event: threading.Event | None = None,
+    ) -> int | None:
         if not self.available or not candidates:
             return None
 
@@ -158,7 +180,7 @@ Balas HANYA JSON: {{"index": 0, "confidence": 0.0, "reason": "singkat"}}
 Permintaan: {query}
 Kandidat: {json.dumps(rows, ensure_ascii=False)}
 """.strip()
-        result = self._generate_json(prompt)
+        result = self._generate_json(prompt, cancel_event=cancel_event)
         if not result.data:
             return None
         try:
