@@ -33,6 +33,27 @@ jobs:
           pip install -r requirements.txt
           pip install "pyinstaller>=6.11,<7"
 
+      - name: Test Windows DPAPI key store
+        shell: pwsh
+        run: |
+          @'
+          import os
+          from pathlib import Path
+          from app.services.secure_keys import WindowsDpapiKeyStore
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "ai-music-downloader-stage5-dpapi"
+          store = WindowsDpapiKeyStore(root)
+          assert store.available
+          fixture = ["stage5-fixture-key-not-real"]
+          store.save(fixture)
+          encrypted = store.path.read_bytes()
+          assert fixture[0].encode("utf-8") not in encrypted
+          assert store.load() == fixture
+          store.delete()
+          assert not store.path.exists()
+          print("WINDOWS_DPAPI_SMOKE_OK")
+          '@ | python -
+
       - name: Build portable ZIP
         shell: pwsh
         run: ./build_portable.ps1
