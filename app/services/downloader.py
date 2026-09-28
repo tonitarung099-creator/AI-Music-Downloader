@@ -12,6 +12,7 @@ from yt_dlp import YoutubeDL
 
 from app.config import app_root
 from app.models import TrackRequest, TrackStatus
+from app.services.audio_tags import apply_audio_tags
 from app.services.gemini_agent import GeminiAgent
 from app.services.matcher import (
     Candidate,
@@ -320,7 +321,6 @@ class DownloadEngine:
                     progress_cb(99.0, "Pemrosesan audio selesai...")
 
         opts: dict = {
-            # Original means audio-only source with no extra lossy transcode.
             "format": "bestaudio",
             "outtmpl": str(destination / "%(title).160B [%(id)s].%(ext)s"),
             "noplaylist": True,
@@ -342,8 +342,6 @@ class DownloadEngine:
             opts["ffmpeg_location"] = ffmpeg
 
         if audio_mode == "m4a":
-            # Preference only. If M4A does not exist, keep the best original
-            # audio stream instead of silently transcoding it to M4A.
             opts["format"] = "bestaudio[ext=m4a]/bestaudio"
         elif audio_mode == "mp3":
             if not ffmpeg:
@@ -384,6 +382,16 @@ class DownloadEngine:
         track.metadata["verified_duration"] = probe.duration
         track.metadata["verified_size_bytes"] = probe.size_bytes
 
+        track.status = TrackStatus.POSTPROCESSING
+        if progress_cb:
+            progress_cb(99.0, "Menulis metadata audio bila didukung...")
+        metadata_warning = apply_audio_tags(final_path, track)
+        if metadata_warning:
+            track.metadata["metadata_tag_warning"] = metadata_warning
+        else:
+            track.metadata.pop("metadata_tag_warning", None)
+
+        track.status = TrackStatus.VERIFYING
         if progress_cb:
             progress_cb(100.0, "Audio terverifikasi.")
 
@@ -397,6 +405,7 @@ class DownloadEngine:
             duration=probe.duration,
             size_bytes=probe.size_bytes,
             verified=True,
+            metadata_warning=metadata_warning,
         )
 
 
