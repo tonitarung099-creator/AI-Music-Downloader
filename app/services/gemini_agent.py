@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 from dataclasses import dataclass
@@ -9,7 +10,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from app.services.matcher import Candidate
+from app.services.matcher import Candidate, GEMINI_HARD_FLOOR
+
+
+MIN_GEMINI_CANDIDATE_CONFIDENCE = 0.72
 
 
 @dataclass(slots=True)
@@ -174,7 +178,8 @@ Perintah pengguna:
         prompt = f"""
 Pilih kandidat YouTube yang PALING mungkin merupakan lagu asli yang diminta.
 Hindari cover, karaoke, live, sped-up, slowed, remix, reverb atau instrumental kecuali memang diminta.
-Utamakan official audio, channel artis resmi, atau channel Topic.
+Utamakan official audio, channel artis resmi, atau channel Topic HANYA jika identitas artis/judul juga cocok.
+Jika bukti lemah atau ambigu, turunkan confidence. Jangan memaksakan pilihan.
 Balas HANYA JSON: {{"index": 0, "confidence": 0.0, "reason": "singkat"}}
 
 Permintaan: {query}
@@ -183,8 +188,24 @@ Kandidat: {json.dumps(rows, ensure_ascii=False)}
         result = self._generate_json(prompt, cancel_event=cancel_event)
         if not result.data:
             return None
+
         try:
             idx = int(result.data.get("index"))
+            confidence = float(result.data.get("confidence"))
         except (TypeError, ValueError):
             return None
-        return idx if 0 <= idx < min(6, len(candidates)) else None
+
+        upper = min(6, len(candidates))
+        if not 0 <= idx < upper:
+            return None
+        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+            return None
+        if confidence < MIN_GEMINI_CANDIDATE_CONFIDENCE:
+            return None
+
+        # Gemini may resolve an ambiguity, but it cannot override the local hard
+        # floor. This prevents a confident model response from blessing a candidate
+        # with almost no title/artist/duration evidence.
+        if candidates[idx].score < GEMINI_HARD_FLOOR:
+            return None
+        return idx
