@@ -13,7 +13,10 @@ def _new_id() -> str:
 class TrackStatus(str, Enum):
     QUEUED = "Menunggu"
     SEARCHING = "Mencari"
+    NEEDS_REVIEW = "Perlu Ditinjau"
     DOWNLOADING = "Mengunduh"
+    POSTPROCESSING = "Memproses Audio"
+    VERIFYING = "Memverifikasi"
     PAUSED = "Dijeda"
     RETRY_WAIT = "Menunggu Retry"
     INTERRUPTED = "Terinterupsi"
