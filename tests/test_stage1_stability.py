@@ -9,6 +9,7 @@ import app.workers as workers_module
 from app.config import AppConfig
 from app.controllers.lifecycle import OperationCoordinator
 from app.models import TrackRequest
+from app.services.downloader import DownloadResult
 from app.services.gemini_agent import GeminiAgent
 from app.workers import ImportWorker, QueueWorker, _is_spotify, _is_youtube_playlist
 
@@ -184,7 +185,19 @@ def test_queue_worker_progress_events_use_stable_job_id(tmp_path):
             callback = kwargs.get("progress_cb")
             if callback:
                 callback(50.0, "fixture")
-            return {"id": "fixture"}
+            path = tmp_path / "fixture.webm"
+            path.write_bytes(b"fixture-audio")
+            return DownloadResult(
+                final_path=str(path),
+                source_id="fixture",
+                source_url="https://example.invalid/audio",
+                title="Fixture",
+                container="webm",
+                audio_codec="opus",
+                duration=1.0,
+                size_bytes=path.stat().st_size,
+                verified=True,
+            )
 
     worker.engine = FixtureEngine()
     event_ids = []
