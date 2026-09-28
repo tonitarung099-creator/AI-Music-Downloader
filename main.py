@@ -29,7 +29,7 @@ _prepare_portable_tools()
 
 from PySide6.QtWidgets import QApplication
 
-from app.ui.main_window_v3 import MainWindow
+from app.ui.production_window import MainWindow
 
 
 def main() -> int:
@@ -40,8 +40,8 @@ def main() -> int:
     window = MainWindow()
 
     if "--self-test" in sys.argv:
-        # Verify the frozen package can import the full UI and can see the
-        # bundled external runtimes required for actual downloads.
+        # Verify the frozen package can import the full production UI and can see
+        # the bundled external runtimes required for actual downloads.
         if window.windowTitle() != "AI Music Downloader":
             return 2
         if getattr(sys, "frozen", False):
