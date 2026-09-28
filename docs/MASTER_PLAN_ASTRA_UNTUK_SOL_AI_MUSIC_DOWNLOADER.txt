@@ -1,0 +1,479 @@
+MASTER PLAN ASTRA → SOL
+PENYEMPURNAAN AI-MUSIC-DOWNLOADER
+Tanggal audit: 28 September 2026
+Repository: https://github.com/tonitarung099-creator/AI-Music-Downloader
+Baseline main: 28f35c720733b41a0a4bab66ae10166f9d9265a6
+Status dokumen: PLANNING. Belum merupakan implementasi/perbaikan aplikasi.
+
+1. MANDAT DAN TARGET PRODUK
+
+Sol bertugas melaksanakan rencana ini secara bertahap pada repository di atas.
+Baca HEAD terbaru, AGENTS.md jika ada, serta seluruh dokumen planning terkait sebelum mengubah kode. Jika HEAD berubah, cocokkan ulang temuan; jangan menghapus perbaikan yang sudah masuk.
+
+Hasil yang dituju:
+- Aplikasi Windows berbahasa Indonesia, mudah dipakai pengguna awam.
+- Produk mandiri, tidak digabung dengan Full-Album-Video-Maker.
+- Masukkan 100+ judul/URL/playlist → identifikasi lagu → unduh antrean → hasil audio dan laporan yang jelas.
+- Spotify digunakan sebagai sumber metadata untuk mencari audio pada sumber unduhan yang didukung. Tidak menjanjikan audio berasal dari master Spotify.
+- Default kualitas Original/Audio Terbaik, tanpa transcoding lossy tambahan; MP3 sebagai opsi kompatibilitas.
+- Gemini opsional: memahami perintah natural dan membantu kandidat ambigu. Download manual tetap bekerja tanpa Gemini, kartu kredit, atau model lokal.
+- Mendukung maksimal 100 API key dengan pengelolaan status/cooldown yang benar. Banyak key tidak menjamin kuota bertambah.
+- Distribusi portable folder multi-file ZIP: ekstrak → jalankan EXE, tanpa admin, tanpa install Python/FFmpeg/Deno. Folder dapat dipindahkan bersama seluruh isinya.
+- Prioritas: lagu yang benar, hasil file yang benar, antrean tahan gangguan, baru penyempurnaan tampilan.
+
+Batas pekerjaan Astra pada audit ini: membaca source/CI, memeriksa kontrak upstream, menjalankan probe logika offline, lalu menyusun dokumen ini. Kode aplikasi tidak diubah.
+
+2. KONDISI BASELINE DAN BATAS VERIFIKASI
+
+Struktur yang benar-benar ada:
+- main.py memakai app/ui/main_window_v3.py.
+- main_window_v3 mewarisi v2, lalu main_window.py.
+- PySide6 + yt-dlp + spotDL; Gemini menggunakan REST melalui urllib.
+- Antrean berjalan serial memakai QThread.
+- Matching lokal judul/channel/durasi dan penalti versi.
+- Pause/stop berupa threading.Event; progress hook yt-dlp memeriksanya.
+- Build PyInstaller --onedir, FFmpeg dan Deno dibundel.
+- Resolusi output relatif di config.py sudah ada dan punya tes. Pertahankan.
+
+Bukti CI:
+- Run 36240896416, SHA baseline di atas: CI berhasil, 13 passed, 1 warning.
+  https://github.com/tonitarung099-creator/AI-Music-Downloader/actions/runs/36240896416
+- Log CI memasang spotdl 4.5.2, yt-dlp 2026.8.19, PySide6 6.11.2, yt-dlp-ejs 0.8.0.
+  Ini versi yang teramati pada run tersebut, bukan rekomendasi versi terbaru.
+- Build Windows Portable run 36240887362 berhasil pada parent SHA
+  186a79ca5d82de73d91757abe4ba1b3a480f27f4.
+  https://github.com/tonitarung099-creator/AI-Music-Downloader/actions/runs/36240887362
+- Commit baseline setelah parent menambah tes path portable; jangan menyebut build parent sebagai build persis SHA baseline.
+
+Batas audit:
+- Full pytest lokal tidak berjalan karena pytest, PySide6, yt-dlp, spotDL tidak terpasang di lingkungan audit.
+- Tidak menjalankan EXE Windows, API Gemini sungguhan, impor Spotify sungguhan, atau unduhan audio jaringan.
+- Probe offline menggunakan source asli dengan pengganti minimal pada import/dependensi jaringan/Qt; hasilnya membuktikan cabang logika yang disebut, bukan integrasi end-to-end.
+- Tidak ada AGENTS.md atau dokumen planning lama pada tree baseline yang diperiksa.
+- CI hijau saat ini belum membuktikan alur Spotify, pembatalan worker, kualitas file, dan perintah AI berjalan penuh.
+
+3. TEMUAN TERPRIORITAS
+
+Label bukti:
+TERKONFIRMASI PROBE = reproduksi logika offline.
+TERKONFIRMASI SOURCE = terlihat langsung pada source, dengan kondisi pemicu.
+RISIKO INTEGRASI = perlu validasi runtime sebelum menyebut kejadian nyata.
+GAP FITUR = kemampuan yang memang belum dibuat.
+
+P0 berarti menghambat fitur utama atau berpotensi kehilangan pekerjaan.
+P1 berarti koreksi penting sebelum rilis stabil.
+P2 berarti penyempurnaan setelah fondasi lulus.
+
+F01 — P0 — Inisialisasi Spotify hilang
+Lokasi: app/services/spotify.py: resolve_spotify; import app/workers.py.
+Bukti SOURCE + kontrak upstream versi 4.5.2:
+resolve_spotify langsung memanggil Playlist.get_metadata/Album.get_metadata/Song.from_url; tidak ada SpotifyClient.init dalam aplikasi.
+SpotifyClient.__new__ upstream melempar error bila belum diinisialisasi.
+Akibat: jalur impor Spotify pada proses baru tidak memiliki bootstrap client yang diwajibkan.
+Tindakan: adapter Spotify dengan init sekali, pengaturan backend sesuai versi yang dipin, dependency injection untuk tes; gunakan lazy import agar gangguan Spotify tidak mematikan input manual/YouTube.
+Selesai jika: track, album, playlist pada proses baru dapat diimpor dengan backend yang didukung, kegagalan akses dijelaskan, input manual tetap berfungsi.
+Catatan: belum diuji live saat audit; jangan mengarang kredensial atau menganggap semua playlist publik selalu bisa dibaca.
+
+F02 — P0 — Penutupan aplikasi tidak mengelola seluruh worker
+Lokasi: app/ui/main_window.py: closeEvent; v3: AgentCommandWorker.
+Bukti SOURCE; crash Windows masih RISIKO INTEGRASI.
+closeEvent hanya stop queue dan wait 2500 ms, mengabaikan hasil wait lalu menerima close. ImportWorker dan AgentCommandWorker tidak ditunggu/dibatalkan. Request Gemini sendiri timeout 30 detik per key.
+Akibat: jendela dapat dihancurkan ketika QThread masih bekerja, pekerjaan terputus dan berisiko crash.
+Tindakan: shutdown coordinator nonblocking, cancellation token lintas tahap, ownership worker jelas, event close ditunda sampai aman; pekerjaan blocking yang tidak dapat dihentikan harus memiliki batas waktu atau process boundary.
+Selesai jika: close saat import/search/API/download/postprocess tidak menghancurkan worker aktif dan antrean tetap dapat dipulihkan.
+
+F03 — P0 — Lagu salah bisa otomatis diterima
+Lokasi: downloader.py: resolve_candidate; gemini_agent.py: choose_candidate.
+Bukti PROBE: kandidat dengan score -0.8 tetap dipilih bila satu-satunya kandidat; confidence Gemini 0.0 tetap menerima index 0.
+Tindakan: keputusan MATCHED / NEEDS_REVIEW / NO_MATCH; minimum evidence, margin kandidat, validasi confidence, dan aturan versi yang diminta. AI tidak boleh meniadakan batas keras.
+Selesai jika: kandidat jelek/ambigu tidak diunduh diam-diam; item pasti tetap lanjut otomatis; item ragu masuk daftar tinjauan tanpa memblokir 99 item lain.
+
+F04 — P0 — Antrean hanya berada dalam memori
+Lokasi: models.py; main_window.py: self.tracks.
+Bukti GAP FITUR.
+Tidak ada penyimpanan job, checkpoint, history, atau output_path.
+Tindakan: SQLite lokal data/queue.sqlite3, stable job_id, migrasi schema, transaksi/checkpoint sebelum dan sesudah perubahan penting.
+Selesai jika: tutup paksa lalu buka kembali tidak menghilangkan daftar; status aktif lama dipulihkan menjadi terinterupsi/menunggu, bukan Selesai palsu.
+
+F05 — P1 — Impor bersifat all-or-nothing
+Lokasi: app/workers.py: ImportWorker.run.
+Bukti PROBE: judul valid lalu URL Spotify gagal → tracks_ready tidak pernah dikirim.
+Satu except membungkus semua baris. Playlist entry None juga memicu kegagalan saat entry.get.
+Tindakan: hasil per baris/item, simpan urutan, kumpulkan error, pertahankan keberhasilan parsial; cancellation dan progress import.
+Selesai jika: 99 item valid + 1 gagal menghasilkan 99 item antrean dan 1 error teridentifikasi, tanpa duplikasi retry.
+
+F06 — P1 — Identifikasi URL memakai substring
+Lokasi: workers.py: _is_spotify, _is_youtube_playlist.
+Bukti PROBE: https://example.org/?next=open.spotify.com/playlist/demo dianggap Spotify.
+Tindakan: urlparse, hostname exact/allowlist subdomain yang benar, path/query tervalidasi, canonical IDs. Bedakan video tunggal vs playlist secara eksplisit; tangani youtu.be dengan parameter list.
+Selesai jika: domain mirip/query berisi URL tidak salah routing; URL rusak tidak menghancurkan batch.
+
+F07 — P1 — Import, AI, dan antrean bisa bertabrakan
+Lokasi: main_window.py: import_input/start_download/clear_queue/retry_failed; v2:_start_after_import; v3:_apply_agent_result.
+Bukti SOURCE; race nyata perlu tes event loop.
+Start tidak memeriksa import aktif. clear_queue tidak membatalkan import. AI bisa memanggil import_input ketika antrean aktif. Worker menerima list self.tracks yang sama; callback berbasis row.
+_start_after_import adalah flag global tanpa identitas job; perintah baru saat import lama aktif bisa terhubung ke pekerjaan salah.
+Tindakan: controller tunggal; command_id/import_id/batch_id/job_id; transisi dan guard konsisten pada UI maupun programmatic call; snapshot konfigurasi per batch.
+Selesai jika: tambah/start/retry/hapus/AI berturut-turut tidak kehilangan item atau mengeksekusi perintah terhadap batch lain.
+
+F08 — P1 — Validasi config dan penyimpanan tidak tahan gagal
+Lokasi: config.py: load/save; main_window.py:_save_download_settings/open_output_folder.
+Bukti PROBE: config.json berisi JSON null menghasilkan TypeError.
+Bukti SOURCE: tidak validasi tipe/rentang max_retries/model/audio_mode; save menulis langsung non-atomic. Path relatif yang baru diketik di UI tidak dinormalisasi ke app_root saat batch berjalan, sementara load menormalisasi; folder kosong memakai cwd.
+Tindakan: schema/default/range, atomic replace + backup, pesan error write/read-only; satu resolver path dipakai UI/engine/load/save.
+Selesai jika: config null/list/tipe salah/rusak tidak membuat startup crash, dan output konsisten meski shortcut memakai working directory lain.
+
+F09 — P1 — Gemini belum memiliki batas retry/cooldown global
+Lokasi: gemini_agent.py:_generate_json/update_keys.
+Bukti SOURCE: semua jenis kegagalan mencoba seluruh key, tidak ada backoff, cooldown, klasifikasi error, dedup, atau cancellation. Cursor/key list mutable dipakai beberapa worker.
+Dengan 100 key dan timeout 30 detik, akumulasi timeout nominal dapat mendekati 50 menit; ini perhitungan risiko, bukan pengukuran.
+Tindakan: scheduler key thread-safe atau pemilik request tunggal; snapshot key; klasifikasi 400/401/403/404/429/5xx/network; budget total; cooldown sesuai retry metadata; log tanpa rahasia.
+Selesai jika: salah model/network gagal tidak menyapu 100 key; cooldown dapat dibatalkan; engine lokal tetap berjalan.
+Kuota Gemini diterapkan per proyek, bukan per API key. Rotasi hanya memakai kapasitas yang sah dan tidak dipasarkan sebagai download/AI tanpa batas.
+
+F10 — P1 — Perintah AI belum divalidasi dan preferensi diabaikan
+Lokasi: gemini_agent.py: parse_command; v3:_apply_agent_result; models.py.
+Bukti SOURCE: JSON hanya harus dict; queries dipaksa str, intent tak dikenal masih bisa menambah queries, quality yang unhashable dapat memicu TypeError; field avoid tidak diteruskan ke matching.
+Tindakan: typed CommandPlan berisi enum intent, daftar string terbatas, quality nullable, avoid/prefer versi, target job IDs/scope. Validasi penuh sebelum mutasi; no-op untuk unknown.
+Selesai jika: “jangan cover/live/remix” benar-benar diterapkan; response cacat tidak mengubah antrean; AI tidak mengarang 100 judul hanya karena diminta “top terbaru”.
+Permintaan “100 lagu teratas terbaru” memerlukan daftar/playlist atau sumber peringkat aktual terverifikasi. Jika belum ada connector sumber peringkat, minta URL/daftar secara jelas.
+
+F11 — P1 — Normalisasi dan penalti matching terlalu kasar
+Lokasi: matcher.py: normalize/score_candidate.
+Bukti PROBE: “東京 夜空” menjadi string kosong. Channel “Discover” terkena penalti substring “cover” sebesar 0.18.
+Bukti SOURCE: semua teks dalam kurung dihapus termasuk identitas versi; deteksi istilah tidak memakai batas kata.
+Tindakan: pertahankan Unicode; pisahkan title/artist/version; noise removal terbatas; word/phrase boundary; hindari bonus berlebihan dari kata “official” yang bisa ditulis siapa pun.
+Selesai jika: judul non-Latin tetap dapat dibandingkan; Discover tidak dianggap cover; versi Live/Remix yang memang diminta tidak ditolak.
+
+F12 — P1 — Selesai belum berarti file audio valid
+Lokasi: downloader.py: download; workers.py: QueueWorker.run.
+Bukti PROBE: engine mengembalikan {} → queue tetap DONE.
+Bukti SOURCE: return info or {}; tidak ada kontrak hasil/file verification atau output_path; progress 100 dikirim sebelum postprocess selesai.
+Tindakan: DownloadResult typed dengan final_path, source ID, codec/container, durasi, ukuran, keberhasilan verifikasi; status POSTPROCESSING/VERIFYING sebelum DONE.
+Selesai jika: file hilang/kosong/tidak memiliki audio/postprocess gagal tidak tampil Selesai; path setelah konversi benar; file valid bisa dibuka dari baris antrean.
+
+F13 — P1 — Kontrak kualitas belum konsisten
+Lokasi: downloader.py: format bestaudio/best; mode m4a.
+Bukti SOURCE: fallback /best dapat berupa media gabungan; m4a memprioritaskan M4A tetapi boleh mengembalikan format lain. Label sekarang “M4A source preferred”, sehingga bukan bug janji strict M4A; perlu memperjelas produk.
+Tindakan: Original ambil audio-only atau remux/extract stream audio lossless bila sumber gabungan; jangan otomatis encode ulang.
+Putuskan UI dua makna yang jelas: “Utamakan M4A (format bisa berbeda)” dan, bila ditambahkan, “Konversi M4A”.
+MP3 tetap opsi transcoding; tampilkan format nyata, bukan klaim kualitas meningkat.
+Selesai jika: setiap mode punya tes fixture format; Original tidak melakukan transcoding lossy.
+
+F14 — P1 — Stop/pause dan timeout belum mencakup semua tahap
+Lokasi: spotify.py: del timeout; matcher.py search; workers.py playlist import; downloader.py hooks.
+Bukti SOURCE: timeout Spotify dibuang; pencarian/import tidak menerima stop token; hook baru bekerja saat transfer; postprocessor tidak punya pengendalian tersendiri.
+Tindakan: cancellation/deadline setiap tahap, retry network terbatas; phase label; jika fase tidak bisa dijeda tampilkan “Menunggu titik jeda aman”.
+Selesai jika: stop tidak memulai lagu berikutnya; koneksi macet tidak membuat close tak terbatas; pause/resume tidak memberi status menyesatkan.
+
+F15 — P1 — Retry tidak membedakan kegagalan dan scope
+Lokasi: workers.py retry loop; main_window.py retry_failed.
+Bukti SOURCE: retry segera tanpa backoff; retry berlapis dengan yt-dlp retries; tombol retry gagal akhirnya menjalankan semua non-DONE termasuk item queued; dapat memutasi track saat worker aktif.
+Tindakan: error taxonomy, budget retry tunggal yang jelas, exponential backoff+jitter cancellable untuk transient; retry permanent hanya setelah tindakan pengguna; scope job IDs eksplisit.
+Selesai jika: satu URL tidak valid gagal cepat, gangguan sementara pulih, Retry Gagal tidak menjalankan item lain tanpa permintaan.
+
+F16 — P1 — Tidak ada dedup/history dan identitas output stabil
+Lokasi: models.py:index; downloader.py: prefix index; UI append.
+Bukti GAP FITUR: URL sama dalam session baru berpotensi memakai prefix berbeda; overwrites=False bukan dedup global.
+Tindakan: source ID/canonical URL dan fingerprint query konservatif, manifest hasil, pilihan duplikat, collision policy; jangan menyatukan live/remix berbeda.
+Selesai jika: impor ulang URL yang sama dikenali, file lama tidak ditimpa, urutan item dapat berubah tanpa mengubah identitas.
+
+F17 — P1 — Tes belum menutup alur utama dan entrypoint berbeda
+Lokasi: .github/workflows/ci.yml; main.py; tests/.
+Bukti SOURCE/CI: smoke memakai v2, aplikasi memakai v3; 13 tes fokus helper, bukan worker/download/UI commands.
+Tindakan: semua smoke memakai entrypoint produksi; regression tests F01–F16; mock network deterministik; Windows frozen smoke dengan jalur download lokal.
+Selesai jika: bug yang disebut memiliki pengujian perilaku relevan dan CI Windows menguji paket hasil ekstraksi.
+
+F18 — P1 — Build belum dapat direproduksi dan pemeriksaan runtime kurang
+Lokasi: requirements.txt; build_portable.ps1; main.py self-test.
+Bukti SOURCE: dependensi tanpa pin; Deno memakai latest; FFmpeg URL bergerak tanpa checksum; ffprobe opsional saat copy dan tidak masuk daftar wajib. Self-test mengecek keberadaan ffmpeg/deno, belum proses ekstraksi/conversion.
+Deno checksum verification SUDAH ADA; pertahankan, jangan mengklaim belum ada.
+Tindakan: lock/constraints yang diuji; version+hash tools; ffprobe wajib; version manifest; test executable nyata; batas waktu self-test; paket licenses/notices sesuai komponen yang didistribusikan.
+Selesai jika: build bersih menghasilkan ZIP lengkap dan portable yang teruji tanpa runtime sistem.
+
+F19 — P2 — UI tiga lapis dan dukungan layar laptop
+Lokasi: main_window.py/v2/v3.
+Bukti SOURCE: tiga inheritance layer menumpuk perilaku; min 1100x720, panel kiri/kanan punya lebar minimum, label campur Inggris.
+Layout overlap pada Windows belum diuji; jangan melaporkannya sebagai bug visual terkonfirmasi.
+Tindakan: konsolidasi controller dan satu MainWindow setelah tes; QSplitter/collapsible agent, teks Bahasa Indonesia, status jelas, filter/search/sort aman berbasis ID.
+Selesai jika: 1366x768 dan DPI 100/125/150% dapat dipakai tanpa kontrol penting terpotong; responsif pada 1.000 baris.
+
+F20 — P2 — Pengelolaan key dan diagnosis pengguna
+Lokasi: ApiKeysDialog/config.json/log_box.
+Bukti SOURCE/GAP: key plaintext terbuka di editor/config; log belum terstruktur/redacted/exportable; model hanya ada config, tidak ada model picker/connection test.
+Tindakan: mask key, reveal eksplisit, dedup/import/export yang tidak menyertakan rahasia secara default, opsi simpan sesi saja; penyimpanan aman Windows dengan penjelasan dampak pindah komputer; model picker tervalidasi, test koneksi manual, diagnostic bundle teredaksi.
+Selesai jika: log/laporan tidak memuat key/cookie/token; aplikasi tetap portable dan key yang tidak dapat didekripsi memberi alur input ulang.
+
+4. ARSITEKTUR TUJUAN
+
+Pertahankan PySide6 dan engine yt-dlp. Hindari rewrite framework.
+
+Alur:
+Input/AI → CommandPlan tervalidasi → ImportService → QueueController
+→ MatchingService → keputusan cocok/tinjau/tidak ditemukan
+→ DownloadService → Postprocess/Verify → QueueRepository/History
+UI menerima event dengan job_id; service tidak langsung mengubah widget.
+
+Modul baru yang disarankan (nama boleh disesuaikan jika repo terbaru sudah setara):
+- app/controllers/queue_controller.py: owner lifecycle dan aturan transisi.
+- app/services/import_service.py: parse/routing/import parsial.
+- app/services/spotify.py: adapter inisialisasi+metadata.
+- app/services/gemini_agent.py: parsing/selection typed, tanpa kendali langsung UI.
+- app/services/key_pool.py: pool key, cooldown, request budget, redaction.
+- app/services/matcher.py: ranking dan MatchDecision.
+- app/services/downloader.py: result contract dan hooks.
+- app/services/output_verifier.py: ffprobe/file validation.
+- app/storage/queue_repository.py: SQLite/migrasi/transaksi.
+- app/services/diagnostics.py: tool health/log redaction.
+- app/ui/main_window.py: satu UI produksi setelah konsolidasi.
+
+Model minimum:
+TrackRequest/QueueJob: job_id UUID, batch_id, order_index, query, title, artists,
+source_type, source_id, source_url, expected_duration, requested_version,
+avoid_variants, status, phase_progress, retries, error_code/error_message,
+selected_candidate_id, resolved_url/title, match_evidence, final_path,
+actual_codec/container/duration/size, created_at/updated_at.
+
+Status internal stabil (label Indonesia di UI):
+QUEUED, RESOLVING, NEEDS_REVIEW, DOWNLOADING, POSTPROCESSING,
+VERIFYING, PAUSED, DONE, FAILED, CANCELLED, INTERRUPTED.
+State enum tidak perlu memakai kalimat UI sebagai nilai database.
+Tidak ada transisi ke DONE tanpa DownloadResult tervalidasi.
+NEEDS_REVIEW bukan FAILED dan tidak otomatis dicoba berkali-kali.
+Gunakan satu pemilik mutasi job; signal membawa snapshot event, bukan index baris.
+Jumlah selesai/gagal/perlu tinjau terpisah dari persen byte.
+
+Persistence:
+- SQLite bawaan Python cukup; satu writer/serialized operations.
+- Simpan setelah impor, pemilihan kandidat, perubahan status, dan hasil akhir.
+- Progress tinggi frekuensi di-throttle; jangan menulis DB setiap byte.
+- Startup recovery mengecek manifest/file, tidak asal melewati DONE yang file-nya hilang.
+- Relative paths untuk file di folder portable; external path tetap absolute.
+- Jangan menyimpan key pada job/manifest/export riwayat.
+- Resume unduhan parsial tetap mengikuti dukungan sumber/yt-dlp, bukan janji universal.
+
+5. URUTAN IMPLEMENTASI SOL
+
+TAHAP 0 — Baseline dan regression gate
+Cakupan: F17 awal; reproduksi F01/F03/F05/F08/F10/F12.
+1. Checkout HEAD terbaru, periksa perubahan setelah baseline.
+2. Rekam python/dependency/tool versions, jalankan tes yang sudah ada.
+3. Tambahkan tes perilaku yang gagal pada baseline, bukan tes yang sekadar menyalin implementasi.
+4. Smoke memakai v3/main entrypoint.
+Output: laporan baseline + regression tests. Jangan menyebut selesai bila hanya compileall.
+Gate: kegagalan target dapat direproduksi dengan fixture deterministik.
+
+TAHAP 1 — Stabilitas proses, Spotify, config, dan impor
+Cakupan: F01, F02, F05, F06, F07, F08, F14 dasar.
+1. Buat lifecycle/controller + ID pekerjaan minimum.
+2. Perbaiki inisialisasi Spotify/lazy import dan timeout adapter.
+3. Import parsial, source routing, pembatalan, event correlation.
+4. Config validation/atomic save/path resolver tunggal.
+5. Close aman di semua fase; kendalikan aksi yang konflik.
+Gate: jalur manual/URL tetap jalan tanpa Gemini/Spotify; close/import gagal tidak kehilangan item valid dan tidak menghancurkan thread aktif.
+Commit per perubahan fungsional; hindari satu commit besar berisi UI baru dan seluruh engine.
+
+TAHAP 2 — Antrean tahan restart, history, retry, dedup
+Cakupan: F04, F15, F16; perkuat F07.
+1. Tambahkan SQLite schema/migration dan repository.
+2. Persist jobs/manifest; restore batch dan pilihan kandidat.
+3. Scope retry/pause/stop/remove/reorder berdasarkan ID.
+4. Error taxonomy dan retry backoff cancellable.
+5. Duplicate policy dan output collision handling.
+Gate: batch 100 item bertahan setelah interupsi/restart, retry hanya target, file selesai tidak diunduh ulang tanpa alasan.
+
+TAHAP 3 — Akurasi lagu dan kualitas output
+Cakupan: F03, F11, F12, F13.
+1. Pisahkan title/artis/versi; normalisasi Unicode.
+2. MatchDecision + evidence/margin + NEEDS_REVIEW.
+3. UI pemilihan kandidat menampilkan judul/channel/durasi/URL/versi; bisa membuka sumber.
+4. Typed DownloadResult, postprocessing status, ffprobe verification.
+5. Kontrak Original/M4A/MP3 dan manifest file.
+6. Metadata tag judul/artis/album/nomor track dari sumber yang diketahui; cover opsional, kegagalan tag/cover tidak menghapus audio valid.
+Gate: fixture lagu salah tidak lolos; Original tidak transcode lossy; DONE hanya file audio valid.
+Gunakan dataset fixture beranotasi minimal 30 kasus (judul sama artis beda, live/remix diminta/tidak, durasi, Unicode, channel misleading). Ukur dan laporkan false positive; jangan klaim akurasi 100% pada internet.
+
+TAHAP 4 — Gemini yang terkontrol
+Cakupan: F09, F10, F20 bagian key/model.
+1. Validasi CommandPlan dan CandidateChoice; allowlisted action saja.
+2. Hubungkan avoid/prefer ke job/matcher.
+3. Scope perintah: add_only, add_and_download, download_queue, retry_failed.
+4. Budget total request, cooldown, cancel, redaction, sinkronisasi key pool.
+5. Model picker/test connection memakai daftar model yang mendukung generateContent.
+6. Cache parsing/matching berdasarkan input dan parameter yang relevan; jangan menggunakan hasil cache untuk mengarang chart terbaru.
+Default usulan: maksimum 2 request in-flight total, request timeout 15 detik,
+budget operasi AI 45 detik, paling banyak 3 percobaan transient per operasi.
+Angka ini keputusan desain awal; sesuaikan melalui pengujian dan patuhi Retry-After/kuota yang tersedia.
+Gate: 100 key gagal tidak menghasilkan 100 request beruntun; invalid schema no-op; tanpa key aplikasi berfungsi; AI confidence rendah tetap tinjau.
+Pemilihan model tidak otomatis berpindah ke layanan berbayar.
+
+TAHAP 5 — UI dan alur pengguna
+Cakupan: F19, sisa F20.
+1. Konsolidasi v2/v3 secara bertahap setelah behavior tests aktif.
+2. Tiga area: input/pengaturan, antrean utama, panel Gemini kanan yang dapat disembunyikan.
+3. Bahasa Indonesia: Mulai, Jeda, Lanjutkan, Hentikan, Coba Lagi yang Gagal,
+   Perlu Ditinjau, Buka File, Buka Folder, Riwayat.
+4. Filter status, pencarian lagu, hapus item terpilih, drag/drop TXT/CSV/URL,
+   urutan stabil, ringkasan batch.
+5. Detail lagu menampilkan permintaan vs hasil, format nyata dan alasan pemilihan.
+6. Laporan batch CSV/JSON dan log teredaksi; API key tidak ikut.
+7. Empty/error/loading state dan feedback yang tidak menutupi tombol.
+Gate: tugas tambah 100 lagu, tinjau kandidat, retry satu gagal, buka hasil dapat dilakukan tanpa membaca log teknis. Uji resolusi/DPI yang ditetapkan.
+
+TAHAP 6 — Portable Windows dan rilis
+Cakupan: F18; full regression.
+1. Lock dependency teruji, pin versi/hash FFmpeg dan Deno; pertahankan checksum Deno.
+2. Pastikan FFmpeg, ffprobe, Deno, yt-dlp-ejs tersedia dan dikenali aplikasi frozen.
+3. Self-test memakai runtime produksi, menguji tool --version dan audio fixture lokal.
+4. Extract ZIP ke path Unicode + spasi, cwd berbeda, jalankan non-admin tanpa Python/tool PATH.
+5. Pindahkan seluruh folder portable; antrean/config/path internal tetap benar.
+6. Verifikasi build from clean checkout, SHA/version manifest, checksum ZIP, notices.
+7. Dokumentasikan cara update: hentikan aplikasi, backup data/config, ganti runtime dengan data pengguna tetap terjaga.
+Gate: Windows 11 manual smoke dan CI artifact lulus. Jika belum diuji pada mesin bersih, tulis batas tersebut; jangan menyebut “sudah pasti jalan di semua laptop”.
+Output: ZIP portable multi-file serta catatan perubahan berbasis SHA.
+
+6. MATRIKS PENGUJIAN PENERIMAAN
+
+T01 Spotify fresh process:
+Mock boundary client yang benar-benar menolak pemakaian sebelum init; inisialisasi hanya sekali; playlist/album/track; uji live terpisah dengan sumber yang dapat diakses.
+
+T02 Import parsial:
+Judul valid + URL gagal + playlist entry None + judul valid → valid tetap masuk, error item spesifik, nomor urut benar.
+
+T03 Routing:
+open.spotify.com, subdomain palsu, domain di query, music.youtube.com, youtu.be,
+watch+list, URL invalid; hasil routing sesuai kebijakan.
+
+T04 Shutdown:
+Tutup saat import, pencarian, Gemini lambat, download, postprocess.
+Tidak ada QThread destroyed while running, tidak ada request baru setelah stop,
+tidak ada hang tak terbatas. Jangan menggunakan QThread.terminate sebagai solusi normal.
+
+T05 Antrean:
+100/1.000 item fixture; start dua kali, retry saat aktif, import selesai setelah clear,
+AI datang ketika import manual berlangsung. Event lama tidak mengubah batch baru.
+
+T06 Restart:
+Interupsi setelah 37/100 item; reopen memulihkan 37 hasil terverifikasi dan sisa pekerjaan,
+membedakan file hilang, interrupted, failed. Uji database/config crash recovery.
+
+T07 Matching:
+Same title different artist, cover/live/remix, versi explicitly diminta, durasi jauh,
+Unicode, channel Discover, metadata missing, AI confidence 0, index bool/out-of-range.
+Threshold dikalibrasi terhadap dataset, bukan angka ajaib tanpa evaluasi.
+
+T08 AI schema:
+queries berupa string/dict/null/list kosong/list non-string, quality list/object,
+unknown intent dengan queries, response non-JSON, prompt injection pada metadata kandidat.
+Tidak ada mutasi sebelum validasi; metadata kandidat dianggap data, bukan instruksi.
+
+T09 Key pool:
+100 key dengan duplicates, 401/403/404/429/5xx/network timeout, Retry-After,
+update key saat request aktif, cancel saat cooldown. Log teredaksi, budget terukur.
+
+T10 Config/path:
+null/list/JSON rusak, max_retries negatif/string/besar, folder read-only,
+drive tidak ada/disk penuh, path relatif, portable pindah folder, nama Unicode/spasi.
+
+T11 Download output:
+Result None/{}, file kosong/hilang, audio-only, combined stream fallback,
+postprocess gagal, ffprobe gagal, durasi tidak sesuai metadata, filename collision.
+Tidak ada DONE palsu atau overwrite hasil pengguna.
+
+T12 Quality:
+Original memelihara codec audio tanpa lossy encode; M4A preferred melaporkan fallback;
+MP3 valid setelah konversi. Simpan source codec/actual codec agar klaim kualitas dapat diperiksa.
+
+T13 Pause/retry:
+Pause/resume ketika transfer, stop saat backoff, permanent error tanpa retry tak berguna,
+Retry Gagal hanya job yang dipilih, done tidak diulang.
+
+T14 Windows package:
+Extract fresh ZIP, tidak ada Python/FFmpeg/Deno sistem, non-admin, path panjang/wajar,
+Unicode/spasi, launch dari shortcut cwd berbeda, ffprobe wajib, tool binary benar-benar runnable.
+
+T15 UI:
+1366x768 dan DPI 100/125/150%; panel Gemini kanan bisa disembunyikan;
+1.000 baris, filter/sort/reorder tidak salah mengarahkan progress ke lagu lain.
+
+T16 Optional services:
+Tanpa Gemini, tanpa akses Spotify, internet terputus, gagal cover/tag.
+Fungsi yang tidak membutuhkan layanan gagal tetap dapat dipakai.
+
+CI policy:
+- Unit dan integration fixture offline wajib; jaringan eksternal bukan syarat tes deterministik.
+- Windows frozen/local audio smoke wajib untuk rilis.
+- Live YouTube/Spotify/Gemini smoke dicatat terpisah, memakai kredensial yang disediakan pengguna/secret CI, tidak dibocorkan.
+- Tes cover/title/helper lama dipertahankan bila masih valid; hapus tes legacy hanya dengan alasan jelas.
+- Jangan menambah tes kosmetik yang hanya memeriksa keberadaan string tanpa menguji perilaku.
+
+7. KEPUTUSAN DESAIN YANG SUDAH DITETAPKAN DALAM PLAN
+
+- Tetap serial download default untuk mengurangi race dan beban; paralel download bukan syarat tahap awal.
+- SQLite untuk persistence; JSON/CSV hanya import/export/laporan.
+- Otomatis melanjutkan lagu berkeyakinan cukup; yang meragukan masuk tinjauan.
+- Gemini opsional dan tidak mempunyai akses shell/execution bebas.
+- Original adalah pilihan default; menaikkan bitrate tidak diklaim memperbaiki sumber lossy.
+- Dukungan format M4A preferred dipertahankan dengan label jujur; strict M4A hanya fitur eksplisit.
+- App tidak menyediakan pencarian chart terbaru dari ingatan model. Minta sumber aktual atau tampilkan keterbatasan.
+- Stable IDs wajib sebelum fitur sort/remove/reorder diperluas.
+- Modul terpisah boleh dibuat, tetapi hindari framework baru, server/cloud wajib, atau rewrite seluruh aplikasi.
+- Jangan memasukkan installer atau single-file EXE sebagai hasil utama.
+- Jangan menghapus data/config pengguna saat update/build atau pengujian.
+- Jangan mengubah lisensi seluruh repository tanpa keputusan pemilik; inventaris notices dependency saja.
+
+8. CHECKLIST PENYELESAIAN DAN HANDOFF SOL
+
+[ ] Tahap 0: baseline dan reproduksi
+[ ] Tahap 1: Spotify/import/config/lifecycle
+[ ] Tahap 2: persistence/recovery/retry/dedup
+[ ] Tahap 3: matching/quality/verifikasi output
+[ ] Tahap 4: Gemini/schema/key pool
+[ ] Tahap 5: UI/diagnostics
+[ ] Tahap 6: Windows portable dan rilis
+
+Setiap akhir tahap, Sol wajib mencatat:
+- SHA commit dan file utama yang berubah.
+- ID temuan yang diselesaikan.
+- Tes yang dijalankan dan hasil sebenarnya.
+- Pengujian yang belum dilakukan beserta alasan konkret.
+- Risiko yang masih tersisa dan tahap berikutnya.
+- Lokasi artifact build jika sudah dibuat.
+
+Definition of done keseluruhan:
+1. Alur 100 lagu teruji; setiap item berakhir dengan hasil file valid, error jelas,
+   cancelled, atau needs-review. Tidak ada item hilang.
+2. Restart memulihkan antrean dan hasil; tidak ada DONE palsu.
+3. Penghentian/penutupan aman untuk seluruh worker.
+4. Matching tidak mengunduh kandidat ambigu diam-diam.
+5. Gemini opsional, schema tervalidasi, budget/cooldown benar.
+6. Portable ZIP teruji di Windows dan data tetap aman saat folder dipindah.
+7. CI menguji entrypoint yang benar dan regression tests utama.
+8. README dan laporan pengguna sesuai kemampuan yang benar-benar sudah diimplementasikan.
+
+PROMPT LANJUTAN UNTUK SOL:
+“Kamu bertugas mengimplementasikan AI-Music-Downloader.
+Baca docs/MASTER_PLAN_ASTRA_UNTUK_SOL_AI_MUSIC_DOWNLOADER.txt dan HEAD terbaru.
+Kerjakan berurutan mulai tahap pertama yang belum selesai. Cocokkan temuan dengan kode
+terbaru, jangan mengulang perbaikan yang sudah ada. Pertahankan UI Bahasa Indonesia,
+Gemini opsional, kualitas audio yang jujur, dan portable folder multi-file ZIP.
+Utamakan correctness, recovery, dan cancellation sebelum kosmetik.
+Update checklist dengan bukti commit/tes; jangan berhenti pada rencana baru.
+Jangan mengklaim pengujian Windows/live API yang belum dijalankan.”
+
+9. REFERENSI YANG DIPERIKSA
+
+Source repo dipin ke baseline:
+https://github.com/tonitarung099-creator/AI-Music-Downloader/tree/28f35c720733b41a0a4bab66ae10166f9d9265a6
+
+Kontrak spotDL:
+https://github.com/spotDL/spotify-downloader/blob/v4.5.2/spotdl/utils/spotify.py
+https://github.com/spotDL/spotify-downloader/blob/master/spotdl/types/playlist.py
+https://github.com/spotDL/spotify-downloader/blob/master/spotdl/__init__.py
+File master dapat berubah; cocokkan kembali dengan versi terpasang saat implementasi.
+
+Gemini API:
+https://ai.google.dev/api/models
+https://ai.google.dev/gemini-api/docs/rate-limits
+Daftar model/kuota dapat berubah. Gunakan API/model discovery dan pengaturan pengguna;
+jangan mengganti model default hanya karena nama versi terdengar tidak dikenal.
