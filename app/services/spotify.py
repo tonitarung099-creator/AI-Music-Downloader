@@ -13,6 +13,8 @@ class SpotifyTrack:
     title: str
     artist: str
     duration: float | None = None
+    source_url: str | None = None
+    source_id: str | None = None
 
     @property
     def query(self) -> str:
@@ -150,7 +152,13 @@ def _to_track(item: dict[str, Any]) -> SpotifyTrack | None:
 
     if not title:
         return None
-    return SpotifyTrack(title=title, artist=artist, duration=duration_f)
+    return SpotifyTrack(
+        title=title,
+        artist=artist,
+        duration=duration_f,
+        source_url=str(item.get("url") or "").strip() or None,
+        source_id=str(item.get("song_id") or item.get("id") or "").strip() or None,
+    )
 
 
 def _song_to_track(song: Any) -> SpotifyTrack:
@@ -169,6 +177,8 @@ def _song_to_track(song: Any) -> SpotifyTrack:
         title=str(getattr(song, "name", "") or "").strip(),
         artist=artist,
         duration=duration,
+        source_url=str(getattr(song, "url", "") or "").strip() or None,
+        source_id=str(getattr(song, "song_id", "") or "").strip() or None,
     )
 
 
