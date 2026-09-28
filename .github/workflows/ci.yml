@@ -30,26 +30,41 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Record runtime versions
+        run: |
+          python --version
+          python -m pip --version
+          python - <<'PY'
+          from importlib.metadata import PackageNotFoundError, version
+
+          for package in ("PySide6", "yt-dlp", "spotdl", "yt-dlp-ejs", "pytest"):
+              try:
+                  value = version(package)
+              except PackageNotFoundError:
+                  value = "NOT_INSTALLED"
+              print(f"{package}=={value}")
+          PY
+
       - name: Compile Python files
         run: python -m compileall -q .
 
-      - name: UI smoke test
+      - name: UI smoke test - production v3
         env:
           PYTHONPATH: .
           QT_QPA_PLATFORM: offscreen
         run: |
           python - <<'PY'
           from PySide6.QtWidgets import QApplication
-          from app.ui.main_window_v2 import MainWindow
+          from app.ui.main_window_v3 import MainWindow
 
           app = QApplication([])
           window = MainWindow()
           assert window.windowTitle() == "AI Music Downloader"
           window.close()
-          print("UI_SMOKE_OK")
+          print("UI_V3_SMOKE_OK")
           PY
 
       - name: Run tests
         env:
           PYTHONPATH: .
-        run: python -m pytest -q
+        run: python -m pytest -q -rxX
