@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from urllib.error import URLError
+import io
+from urllib.error import HTTPError, URLError
 
 import app.services.downloader as downloader_module
 from app.models import TrackRequest
@@ -157,6 +158,45 @@ def test_stage4_one_operation_never_sweeps_100_failed_keys(monkeypatch):
     assert result.data is None
     assert len(calls) == 3
     assert all(key not in result.error for key in keys)
+
+
+def test_stage4_rate_limit_uses_retry_after_cooldown():
+    agent = GeminiAgent(["fixture-key"])
+    error = HTTPError(
+        "https://generativelanguage.googleapis.com/fixture",
+        429,
+        "rate limited",
+        {"Retry-After": "120"},
+        io.BytesIO(b'{"error":{"message":"quota"}}'),
+    )
+
+    stop, message = agent._handle_http_failure("fixture-key", error, 1)
+    diagnostics = agent.key_diagnostics()
+
+    assert stop is False
+    assert "429" in message
+    assert diagnostics == {"total": 1, "active": 0, "cooldown": 1, "disabled": 0}
+    assert agent._eligible_keys() == []
+
+
+def test_stage4_unauthorized_key_is_disabled_until_keys_are_updated():
+    agent = GeminiAgent(["fixture-key"])
+    error = HTTPError(
+        "https://generativelanguage.googleapis.com/fixture",
+        401,
+        "unauthorized",
+        {},
+        io.BytesIO(b'{"error":{"message":"bad key"}}'),
+    )
+
+    stop, message = agent._handle_http_failure("fixture-key", error, 1)
+    assert stop is False
+    assert "ditolak" in message
+    assert agent.key_diagnostics()["disabled"] == 1
+    assert agent._eligible_keys() == []
+
+    agent.update_keys(["fixture-key"])
+    assert agent.key_diagnostics() == {"total": 1, "active": 1, "cooldown": 0, "disabled": 0}
 
 
 def test_stage4_without_key_does_not_attempt_network(monkeypatch):
