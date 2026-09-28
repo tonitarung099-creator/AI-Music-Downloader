@@ -8,7 +8,7 @@ import app.services.downloader as downloader_module
 import app.workers as workers_module
 from app.config import AppConfig
 from app.models import TrackRequest, TrackStatus
-from app.services.downloader import DownloadEngine
+from app.services.downloader import DownloadCancelled, DownloadEngine
 from app.services.errors import ErrorKind, classify_exception
 from app.services.gemini_agent import GeminiAgent
 from app.services.identity import canonical_media_key, track_dedup_key
@@ -44,6 +44,25 @@ def test_stage2_restores_100_jobs_and_marks_runtime_states_interrupted(tmp_path)
     assert [track.job_id for track in restored] == [track.job_id for track in tracks]
     assert all(track.status == TrackStatus.INTERRUPTED for track in restored[:4])
     assert all(track.status == TrackStatus.QUEUED for track in restored[4:])
+
+
+def test_stage2_restore_preserves_resolved_candidate_choice(tmp_path):
+    repo = _repo(tmp_path)
+    track = TrackRequest(index=1, query="Artist - Song")
+    repo.add_tracks([track])
+    track.resolved_url = "https://www.youtube.com/watch?v=chosen123"
+    track.resolved_title = "Artist - Song (Official Audio)"
+    track.metadata["match_score"] = 0.92
+    track.status = TrackStatus.SEARCHING
+    repo.checkpoint(track, event="candidate_selected")
+
+    restored = QueueRepository(repo.path).restore_queue()
+
+    assert len(restored) == 1
+    assert restored[0].status == TrackStatus.INTERRUPTED
+    assert restored[0].resolved_url == track.resolved_url
+    assert restored[0].resolved_title == track.resolved_title
+    assert restored[0].metadata["match_score"] == 0.92
 
 
 def test_stage2_youtube_tracking_params_dedup_to_same_media(tmp_path):
@@ -110,6 +129,34 @@ def test_stage2_completed_manifest_prevents_redownload_after_queue_removal(tmp_p
     assert repo.manifest_entry(track_dedup_key(original)) is not None
 
 
+def test_stage2_restored_done_job_is_never_downloaded_again(tmp_path):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    assert app is not None
+
+    repo = _repo(tmp_path)
+    done = TrackRequest(index=1, query="Already done", status=TrackStatus.DONE, progress=100.0)
+    repo.add_tracks([done])
+    repo.checkpoint(done, event="completed")
+    restored = QueueRepository(repo.path).restore_queue()
+
+    worker = QueueWorker(
+        restored,
+        AppConfig(output_dir=str(tmp_path), max_retries=3),
+        GeminiAgent([]),
+        repository=repo,
+    )
+
+    class MustNotRunEngine:
+        def download(self, *args, **kwargs):
+            raise AssertionError("DONE job must not be downloaded again")
+
+    worker.engine = MustNotRunEngine()
+    worker.run()
+
+    assert restored[0].status == TrackStatus.DONE
+    assert restored[0].attempt_count == 0
+
+
 def test_stage2_reorder_changes_position_not_identity(tmp_path):
     repo = _repo(tmp_path)
     tracks = [TrackRequest(index=i + 1, query=f"Song {i}") for i in range(3)]
@@ -151,6 +198,37 @@ def test_stage2_retry_scope_does_not_run_unrelated_queued_job(tmp_path):
     assert by_id[target.job_id].status == TrackStatus.DONE
     assert by_id[unrelated.job_id].status == TrackStatus.QUEUED
     assert by_id[unrelated.job_id].attempt_count == 0
+
+
+def test_stage2_stop_cancels_current_job_but_leaves_unstarted_job_queued(tmp_path):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    assert app is not None
+
+    repo = _repo(tmp_path)
+    current = TrackRequest(index=1, query="Current")
+    later = TrackRequest(index=2, query="Later")
+    repo.add_tracks([current, later])
+
+    worker = QueueWorker(
+        [current, later],
+        AppConfig(output_dir=str(tmp_path), max_retries=2),
+        GeminiAgent([]),
+        repository=repo,
+    )
+
+    class StopOnFirstEngine:
+        def download(self, track, **kwargs):
+            kwargs["stop_event"].set()
+            raise DownloadCancelled("Dibatalkan pengguna.")
+
+    worker.engine = StopOnFirstEngine()
+    worker.run()
+
+    restored = QueueRepository(repo.path).restore_queue()
+    by_id = {track.job_id: track for track in restored}
+    assert by_id[current.job_id].status == TrackStatus.CANCELLED
+    assert by_id[later.job_id].status == TrackStatus.QUEUED
+    assert by_id[later.job_id].attempt_count == 0
 
 
 def test_stage2_permanent_error_fails_fast_without_auto_retry(tmp_path):
