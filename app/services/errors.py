@@ -11,6 +11,7 @@ class ErrorKind(str, Enum):
     CANCELLED = "CANCELLED"
     INVALID_INPUT = "INVALID_INPUT"
     NOT_FOUND = "NOT_FOUND"
+    VERIFICATION = "VERIFICATION"
     AUTH = "AUTH"
     RATE_LIMITED = "RATE_LIMITED"
     NETWORK = "NETWORK"
@@ -36,7 +37,16 @@ _PERMANENT_MARKERS = (
     "copyright",
     "not available in your country",
     "tidak menemukan kandidat youtube",
+    "tidak ada kandidat youtube dengan bukti yang cukup cocok",
     "mode mp3 membutuhkan ffmpeg",
+)
+_VERIFICATION_MARKERS = (
+    "ffprobe",
+    "file final hasil download tidak ditemukan",
+    "file hasil download kosong",
+    "tidak memiliki stream audio",
+    "durasi audio hasil download tidak valid",
+    "downloader tidak mengembalikan identitas media yang valid",
 )
 _TRANSIENT_MARKERS = (
     "timed out",
@@ -72,6 +82,10 @@ def classify_exception(exc: BaseException) -> FailureInfo:
 
     if exc.__class__.__name__ == "DownloadCancelled":
         return FailureInfo(ErrorKind.CANCELLED, False, message)
+    if exc.__class__.__name__ == "DownloadVerificationError" or any(
+        marker in lowered for marker in _VERIFICATION_MARKERS
+    ):
+        return FailureInfo(ErrorKind.VERIFICATION, False, message)
 
     if isinstance(exc, HTTPError):
         if exc.code == 429:
@@ -95,6 +109,8 @@ def classify_exception(exc: BaseException) -> FailureInfo:
         kind = ErrorKind.SERVER if "http error 5" in lowered else ErrorKind.NETWORK
         return FailureInfo(kind, True, message)
     if any(marker in lowered for marker in _PERMANENT_MARKERS):
+        if "kandidat youtube" in lowered:
+            return FailureInfo(ErrorKind.NOT_FOUND, False, message)
         kind = ErrorKind.INVALID_INPUT if "url" in lowered else ErrorKind.PERMANENT
         return FailureInfo(kind, False, message)
 
