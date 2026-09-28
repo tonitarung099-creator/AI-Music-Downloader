@@ -17,6 +17,8 @@ SCHEMA_VERSION = 1
 ACTIVE_RUNTIME_STATUSES = {
     TrackStatus.SEARCHING.name,
     TrackStatus.DOWNLOADING.name,
+    TrackStatus.POSTPROCESSING.name,
+    TrackStatus.VERIFYING.name,
     TrackStatus.PAUSED.name,
     TrackStatus.RETRY_WAIT.name,
 }
@@ -359,7 +361,13 @@ class QueueRepository:
         except sqlite3.Error as exc:
             raise QueueStorageError(f"Gagal menyimpan checkpoint antrean: {exc}") from exc
 
-    def checkpoint_many(self, tracks: Iterable[TrackRequest], *, event: str | None = None) -> None:
+    def checkpoint_many(
+        self,
+        tracks: Iterable[TrackRequest],
+        *,
+        event: str | None = None,
+        detail: str = "",
+    ) -> None:
         items = list(tracks)
         if not items:
             return
@@ -368,87 +376,73 @@ class QueueRepository:
                 for track in items:
                     self._upsert_job(conn, self._job_params(track))
                     if event:
-                        self._record_event(conn, track.job_id, event, track.status.name, "")
+                        self._record_event(conn, track.job_id, event, track.status.name, detail)
                     self._upsert_manifest(conn, track)
         except sqlite3.Error as exc:
-            raise QueueStorageError(f"Gagal menyimpan antrean: {exc}") from exc
+            raise QueueStorageError(f"Gagal menyimpan batch antrean: {exc}") from exc
 
     def restore_queue(self) -> list[TrackRequest]:
-        """Restore active queue and convert stale runtime states to INTERRUPTED."""
         try:
             with self._lock, self._connect() as conn:
-                active_rows = conn.execute(
-                    """
-                    SELECT job_id, status
-                    FROM jobs
-                    WHERE is_removed = 0 AND status IN (?, ?, ?, ?)
-                    """,
-                    tuple(ACTIVE_RUNTIME_STATUSES),
-                ).fetchall()
-                for row in active_rows:
-                    conn.execute(
-                        """
-                        UPDATE jobs
-                        SET status = ?, error = ?, error_code = ?, error_retryable = 1, updated_at = ?
-                        WHERE job_id = ?
-                        """,
-                        (
-                            TrackStatus.INTERRUPTED.name,
-                            "Proses sebelumnya terputus sebelum selesai.",
-                            "INTERRUPTED",
-                            _utc_now(),
-                            row["job_id"],
-                        ),
-                    )
-                    self._record_event(
-                        conn,
-                        str(row["job_id"]),
-                        "restored_interrupted",
-                        TrackStatus.INTERRUPTED.name,
-                        f"Status lama: {row['status']}",
-                    )
-
                 rows = conn.execute(
-                    "SELECT * FROM jobs WHERE is_removed = 0 ORDER BY position ASC, created_at ASC"
+                    """
+                    SELECT * FROM jobs
+                    WHERE is_removed = 0
+                    ORDER BY position ASC, created_at ASC
+                    """
                 ).fetchall()
+                restored: list[TrackRequest] = []
+                for position, row in enumerate(rows, start=1):
+                    status_name = str(row["status"])
+                    status = _status_from_db(status_name)
+                    if status_name in ACTIVE_RUNTIME_STATUSES:
+                        status = TrackStatus.INTERRUPTED
+                        conn.execute(
+                            "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
+                            (TrackStatus.INTERRUPTED.name, _utc_now(), row["job_id"]),
+                        )
+                        self._record_event(
+                            conn,
+                            str(row["job_id"]),
+                            "restored_interrupted",
+                            TrackStatus.INTERRUPTED.name,
+                            f"Status runtime sebelumnya: {status_name}",
+                        )
+
+                    track = TrackRequest(
+                        index=position,
+                        query=str(row["query"]),
+                        source=str(row["source"]),
+                        direct_url=row["direct_url"],
+                        title=row["title"],
+                        artist=row["artist"],
+                        duration=row["duration"],
+                        status=status,
+                        progress=float(row["progress"] or 0.0),
+                        error=str(row["error"] or ""),
+                        resolved_url=row["resolved_url"],
+                        resolved_title=row["resolved_title"],
+                        job_id=str(row["job_id"]),
+                        batch_id=str(row["batch_id"] or ""),
+                        dedup_key=str(row["dedup_key"] or ""),
+                        output_path=row["output_path"],
+                        attempt_count=int(row["attempt_count"] or 0),
+                        error_code=str(row["error_code"] or ""),
+                        error_retryable=bool(row["error_retryable"]),
+                        metadata=_load_metadata(row["metadata_json"]),
+                    )
+                    restored.append(track)
+                return restored
         except sqlite3.Error as exc:
             raise QueueStorageError(f"Gagal memulihkan antrean: {exc}") from exc
-
-        tracks: list[TrackRequest] = []
-        for row in rows:
-            status = _status_from_db(str(row["status"]))
-            track = TrackRequest(
-                index=int(row["position"]),
-                query=str(row["query"]),
-                source=str(row["source"]),
-                direct_url=row["direct_url"],
-                title=row["title"],
-                artist=row["artist"],
-                duration=row["duration"],
-                status=status,
-                progress=float(row["progress"] or 0.0),
-                error=str(row["error"] or ""),
-                resolved_url=row["resolved_url"],
-                resolved_title=row["resolved_title"],
-                job_id=str(row["job_id"]),
-                batch_id=str(row["batch_id"] or ""),
-                dedup_key=str(row["dedup_key"] or ""),
-                output_path=row["output_path"],
-                attempt_count=int(row["attempt_count"] or 0),
-                error_code=str(row["error_code"] or ""),
-                error_retryable=bool(row["error_retryable"]),
-                metadata=_load_metadata(row["metadata_json"]),
-            )
-            tracks.append(track)
-        return tracks
 
     def remove_jobs(self, job_ids: Iterable[str], *, detail: str = "Dihapus dari antrean") -> int:
         ids = [str(job_id) for job_id in job_ids if str(job_id)]
         if not ids:
             return 0
-        removed = 0
         try:
             with self._lock, self._connect() as conn:
+                changed = 0
                 for job_id in ids:
                     row = conn.execute(
                         "SELECT status FROM jobs WHERE job_id = ? AND is_removed = 0",
@@ -461,10 +455,10 @@ class QueueRepository:
                         (_utc_now(), job_id),
                     )
                     self._record_event(conn, job_id, "removed", str(row["status"]), detail)
-                    removed += 1
+                    changed += 1
+                return changed
         except sqlite3.Error as exc:
             raise QueueStorageError(f"Gagal menghapus item antrean: {exc}") from exc
-        return removed
 
     def reorder(self, ordered_job_ids: Iterable[str]) -> None:
         ids = [str(job_id) for job_id in ordered_job_ids if str(job_id)]
@@ -475,7 +469,6 @@ class QueueRepository:
                         "UPDATE jobs SET position = ?, updated_at = ? WHERE job_id = ? AND is_removed = 0",
                         (position, _utc_now(), job_id),
                     )
-                    self._record_event(conn, job_id, "reordered", None, f"Posisi {position}")
         except sqlite3.Error as exc:
             raise QueueStorageError(f"Gagal menyimpan urutan antrean: {exc}") from exc
 
@@ -491,21 +484,15 @@ class QueueRepository:
                         (job_id,),
                     ).fetchone()
                     if row is not None:
-                        self._record_event(conn, job_id, "retry_requested", str(row["status"]), "")
+                        self._record_event(
+                            conn,
+                            job_id,
+                            "retry_requested",
+                            str(row["status"]),
+                            "Retry manual untuk job ID ini saja",
+                        )
         except sqlite3.Error as exc:
             raise QueueStorageError(f"Gagal mencatat retry: {exc}") from exc
-
-    def history(self, *, limit: int = 200) -> list[dict]:
-        safe_limit = max(1, min(5000, int(limit)))
-        try:
-            with self._lock, self._connect() as conn:
-                rows = conn.execute(
-                    "SELECT id, job_id, event, status, detail, created_at FROM job_history ORDER BY id DESC LIMIT ?",
-                    (safe_limit,),
-                ).fetchall()
-        except sqlite3.Error as exc:
-            raise QueueStorageError(f"Gagal membaca riwayat antrean: {exc}") from exc
-        return [dict(row) for row in rows]
 
     def manifest_entry(self, dedup_key: str) -> dict | None:
         try:
@@ -514,16 +501,6 @@ class QueueRepository:
                     "SELECT * FROM manifest WHERE dedup_key = ? LIMIT 1",
                     (dedup_key,),
                 ).fetchone()
+                return dict(row) if row is not None else None
         except sqlite3.Error as exc:
             raise QueueStorageError(f"Gagal membaca manifest: {exc}") from exc
-        return dict(row) if row is not None else None
-
-    def active_job_ids(self) -> list[str]:
-        try:
-            with self._lock, self._connect() as conn:
-                rows = conn.execute(
-                    "SELECT job_id FROM jobs WHERE is_removed = 0 ORDER BY position ASC"
-                ).fetchall()
-        except sqlite3.Error as exc:
-            raise QueueStorageError(f"Gagal membaca antrean aktif: {exc}") from exc
-        return [str(row["job_id"]) for row in rows]
