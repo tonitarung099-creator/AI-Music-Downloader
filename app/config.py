@@ -26,9 +26,10 @@ def app_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def resolve_output_dir(value: str | None) -> str:
+def resolve_output_dir(value: object = None) -> str:
     """Resolve an output path consistently against the portable app root."""
-    text = str(value or "").strip() or "downloads"
+    text = value.strip() if isinstance(value, str) else ""
+    text = text or "downloads"
     path = Path(text).expanduser()
     if not path.is_absolute():
         path = app_root() / path
@@ -40,10 +41,11 @@ def _resolve_output_dir(value: str) -> str:
     return resolve_output_dir(value)
 
 
-def _serialize_output_dir(value: str) -> str:
+def _serialize_output_dir(value: object) -> str:
     """Store paths inside the portable folder relatively so moves keep working."""
     root = app_root().resolve()
-    path = Path(value or "downloads").expanduser()
+    text = value.strip() if isinstance(value, str) else ""
+    path = Path(text or "downloads").expanduser()
     if not path.is_absolute():
         path = root / path
     path = path.resolve()
@@ -68,6 +70,17 @@ def _clean_api_keys(value: object) -> list[str]:
         if len(result) >= 100:
             break
     return result
+
+
+def _valid_audio_mode(value: object) -> str:
+    return value if isinstance(value, str) and value in AUDIO_MODES else DEFAULT_AUDIO_MODE
+
+
+def _valid_model(value: object) -> str:
+    if not isinstance(value, str):
+        return DEFAULT_GEMINI_MODEL
+    text = value.strip()
+    return text or DEFAULT_GEMINI_MODEL
 
 
 def _valid_retries(value: object) -> int:
@@ -102,20 +115,9 @@ class AppConfig:
             except (OSError, json.JSONDecodeError, UnicodeError):
                 raw = {}
 
-        output_dir = raw.get("output_dir")
-        if isinstance(output_dir, str) and output_dir.strip():
-            cfg.output_dir = resolve_output_dir(output_dir)
-        else:
-            cfg.output_dir = resolve_output_dir("downloads")
-
-        audio_mode = raw.get("audio_mode")
-        if isinstance(audio_mode, str) and audio_mode in AUDIO_MODES:
-            cfg.audio_mode = audio_mode
-
-        gemini_model = raw.get("gemini_model")
-        if isinstance(gemini_model, str) and gemini_model.strip():
-            cfg.gemini_model = gemini_model.strip()
-
+        cfg.output_dir = resolve_output_dir(raw.get("output_dir"))
+        cfg.audio_mode = _valid_audio_mode(raw.get("audio_mode"))
+        cfg.gemini_model = _valid_model(raw.get("gemini_model"))
         cfg.max_retries = _valid_retries(raw.get("max_retries"))
         cfg.gemini_api_keys = _clean_api_keys(raw.get("gemini_api_keys"))
 
@@ -130,17 +132,16 @@ class AppConfig:
         """Return a detached settings snapshot for a running batch."""
         return AppConfig(
             output_dir=resolve_output_dir(self.output_dir),
-            audio_mode=self.audio_mode if self.audio_mode in AUDIO_MODES else DEFAULT_AUDIO_MODE,
-            gemini_model=(self.gemini_model or DEFAULT_GEMINI_MODEL).strip(),
-            gemini_api_keys=list(self.gemini_api_keys[:100]),
+            audio_mode=_valid_audio_mode(self.audio_mode),
+            gemini_model=_valid_model(self.gemini_model),
+            gemini_api_keys=_clean_api_keys(self.gemini_api_keys),
             max_retries=_valid_retries(self.max_retries),
         )
 
     def save(self) -> None:
         self.output_dir = resolve_output_dir(self.output_dir)
-        if self.audio_mode not in AUDIO_MODES:
-            self.audio_mode = DEFAULT_AUDIO_MODE
-        self.gemini_model = (self.gemini_model or DEFAULT_GEMINI_MODEL).strip()
+        self.audio_mode = _valid_audio_mode(self.audio_mode)
+        self.gemini_model = _valid_model(self.gemini_model)
         self.max_retries = _valid_retries(self.max_retries)
         self.gemini_api_keys = _clean_api_keys(self.gemini_api_keys)
 
