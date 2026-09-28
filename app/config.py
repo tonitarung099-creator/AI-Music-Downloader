@@ -8,12 +8,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from app.services.secure_keys import SecureKeyStoreError, WindowsDpapiKeyStore
+
 
 AUDIO_MODES = {"original", "m4a", "mp3"}
 DEFAULT_AUDIO_MODE = "original"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_MAX_RETRIES = 2
 MAX_RETRIES_LIMIT = 10
+KEY_STORAGE_MODES = {"windows_dpapi", "session"}
 
 
 class ConfigSaveError(RuntimeError):
@@ -89,13 +92,23 @@ def _valid_retries(value: object) -> int:
     return max(0, min(MAX_RETRIES_LIMIT, value))
 
 
+def _default_key_storage() -> str:
+    return "windows_dpapi" if os.name == "nt" else "session"
+
+
+def _valid_key_storage(value: object) -> str:
+    return value if isinstance(value, str) and value in KEY_STORAGE_MODES else _default_key_storage()
+
+
 @dataclass
 class AppConfig:
     output_dir: str = field(default_factory=lambda: str(app_root() / "downloads"))
     audio_mode: str = DEFAULT_AUDIO_MODE
     gemini_model: str = DEFAULT_GEMINI_MODEL
     gemini_api_keys: list[str] = field(default_factory=list)
+    gemini_key_storage: str = field(default_factory=_default_key_storage)
     max_retries: int = DEFAULT_MAX_RETRIES
+    key_storage_warning: str = field(default="", init=False, repr=False, compare=False)
 
     @property
     def config_path(self) -> Path:
@@ -119,24 +132,44 @@ class AppConfig:
         cfg.audio_mode = _valid_audio_mode(raw.get("audio_mode"))
         cfg.gemini_model = _valid_model(raw.get("gemini_model"))
         cfg.max_retries = _valid_retries(raw.get("max_retries"))
-        cfg.gemini_api_keys = _clean_api_keys(raw.get("gemini_api_keys"))
+        cfg.gemini_key_storage = _valid_key_storage(raw.get("gemini_key_storage"))
+        legacy_keys = _clean_api_keys(raw.get("gemini_api_keys"))
+        cfg.gemini_api_keys = legacy_keys
+
+        if cfg.gemini_key_storage == "windows_dpapi":
+            store = WindowsDpapiKeyStore(app_root())
+            if store.available:
+                try:
+                    secure_keys = store.load()
+                except SecureKeyStoreError as exc:
+                    cfg.key_storage_warning = str(exc)
+                else:
+                    if secure_keys:
+                        cfg.gemini_api_keys = secure_keys
+            elif not legacy_keys:
+                cfg.key_storage_warning = (
+                    "Penyimpanan aman Windows tidak tersedia; API key perlu dimasukkan untuk sesi ini."
+                )
 
         env_keys = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY")
         if env_keys:
             parsed = [x.strip() for x in env_keys.replace("\n", ",").split(",") if x.strip()]
             if parsed:
                 cfg.gemini_api_keys = _clean_api_keys(parsed)
+                cfg.gemini_key_storage = "session"
         return cfg
 
     def snapshot(self) -> "AppConfig":
         """Return a detached settings snapshot for a running batch."""
-        return AppConfig(
+        snapshot = AppConfig(
             output_dir=resolve_output_dir(self.output_dir),
             audio_mode=_valid_audio_mode(self.audio_mode),
             gemini_model=_valid_model(self.gemini_model),
             gemini_api_keys=_clean_api_keys(self.gemini_api_keys),
+            gemini_key_storage=_valid_key_storage(self.gemini_key_storage),
             max_retries=_valid_retries(self.max_retries),
         )
+        return snapshot
 
     def save(self) -> None:
         self.output_dir = resolve_output_dir(self.output_dir)
@@ -144,10 +177,26 @@ class AppConfig:
         self.gemini_model = _valid_model(self.gemini_model)
         self.max_retries = _valid_retries(self.max_retries)
         self.gemini_api_keys = _clean_api_keys(self.gemini_api_keys)
+        self.gemini_key_storage = _valid_key_storage(self.gemini_key_storage)
 
         data = asdict(self)
+        data.pop("key_storage_warning", None)
         data["output_dir"] = _serialize_output_dir(self.output_dir)
-        data["gemini_api_keys"] = self.gemini_api_keys[:100]
+        data["gemini_api_keys"] = []
+
+        store = WindowsDpapiKeyStore(app_root())
+        remove_secure_after_save = False
+        if self.gemini_key_storage == "windows_dpapi":
+            if not store.available:
+                raise ConfigSaveError(
+                    "Penyimpanan Windows DPAPI tidak tersedia. Pilih mode 'hanya sesi ini' untuk API key."
+                )
+            try:
+                store.save(self.gemini_api_keys)
+            except SecureKeyStoreError as exc:
+                raise ConfigSaveError(str(exc)) from exc
+        else:
+            remove_secure_after_save = store.available
 
         path = self.config_path
         backup = path.with_name(path.name + ".bak")
@@ -171,3 +220,11 @@ class AppConfig:
             except OSError:
                 pass
             raise ConfigSaveError(f"Gagal menyimpan config.json: {exc}") from exc
+
+        if remove_secure_after_save:
+            try:
+                store.delete()
+            except SecureKeyStoreError:
+                # Mode sesi sudah tersimpan di config; blob lama tidak akan dibaca lagi.
+                pass
+        self.key_storage_warning = ""
