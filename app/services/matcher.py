@@ -6,7 +6,7 @@ import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import Enum
-from typing import Any
+from typing import Any, Iterable
 
 from yt_dlp import YoutubeDL
 
@@ -77,6 +77,25 @@ def _plain_words(text: str) -> str:
         category = unicodedata.category(ch)
         chars.append(ch if category[:1] in {"L", "N"} else " ")
     return " ".join("".join(chars).split())
+
+
+def canonical_version(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = _plain_words(value)
+    allowed = {_plain_words(item) for item in VERSION_PHRASES}
+    return normalized if normalized in allowed else None
+
+
+def normalize_version_preferences(values: object) -> set[str]:
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return set()
+    result: set[str] = set()
+    for value in values:
+        canonical = canonical_version(value)
+        if canonical:
+            result.add(canonical)
+    return result
 
 
 def _contains_phrase(normalized_text: str, phrase: str) -> bool:
@@ -153,7 +172,14 @@ def _duration_score(expected: float | None, actual: float | None) -> float:
     return -0.05
 
 
-def score_candidate(query: str, candidate: Candidate, expected_duration: float | None = None) -> float:
+def score_candidate(
+    query: str,
+    candidate: Candidate,
+    expected_duration: float | None = None,
+    *,
+    avoid_versions: Iterable[str] | None = None,
+    prefer_versions: Iterable[str] | None = None,
+) -> float:
     nq = normalize(query)
     nt = normalize(candidate.title)
     nu = normalize(candidate.uploader)
@@ -182,10 +208,24 @@ def score_candidate(query: str, candidate: Candidate, expected_duration: float |
 
     requested_versions = extract_versions(query)
     candidate_versions = extract_versions(candidate.title)
-    unexpected_versions = candidate_versions - requested_versions
+    avoided = normalize_version_preferences(set(avoid_versions or []))
+    preferred = normalize_version_preferences(set(prefer_versions or []))
+
+    # A preferred version is considered allowed, so e.g. "prefer acoustic" does
+    # not get the normal unexpected-version penalty. Avoid remains dominant.
+    allowed_versions = requested_versions | preferred
+    unexpected_versions = candidate_versions - allowed_versions
     missing_versions = requested_versions - candidate_versions
     score -= min(0.44, 0.22 * len(unexpected_versions))
     score -= min(0.36, 0.18 * len(missing_versions))
+
+    avoided_hits = candidate_versions & avoided
+    if avoided_hits:
+        score -= min(0.90, 0.60 * len(avoided_hits))
+
+    preferred_hits = candidate_versions & preferred
+    if preferred_hits:
+        score += min(0.24, 0.12 * len(preferred_hits))
 
     full_plain = _plain_words(f"{candidate.title} {candidate.uploader}")
     uploader_plain = _plain_words(candidate.uploader)
@@ -202,7 +242,14 @@ def score_candidate(query: str, candidate: Candidate, expected_duration: float |
     return max(-1.0, min(1.5, score))
 
 
-def rank_candidates(query: str, entries: list[dict[str, Any]], expected_duration: float | None = None) -> list[Candidate]:
+def rank_candidates(
+    query: str,
+    entries: list[dict[str, Any]],
+    expected_duration: float | None = None,
+    *,
+    avoid_versions: Iterable[str] | None = None,
+    prefer_versions: Iterable[str] | None = None,
+) -> list[Candidate]:
     ranked: list[Candidate] = []
     for entry in entries:
         if not entry:
@@ -222,14 +269,27 @@ def rank_candidates(query: str, entries: list[dict[str, Any]], expected_duration
             duration=entry.get("duration"),
             raw=entry,
         )
-        candidate.score = score_candidate(query, candidate, expected_duration)
+        candidate.score = score_candidate(
+            query,
+            candidate,
+            expected_duration,
+            avoid_versions=avoid_versions,
+            prefer_versions=prefer_versions,
+        )
         ranked.append(candidate)
 
     ranked.sort(key=lambda candidate: candidate.score, reverse=True)
     return ranked
 
 
-def search_youtube(query: str, limit: int = 8, expected_duration: float | None = None) -> list[Candidate]:
+def search_youtube(
+    query: str,
+    limit: int = 8,
+    expected_duration: float | None = None,
+    *,
+    avoid_versions: Iterable[str] | None = None,
+    prefer_versions: Iterable[str] | None = None,
+) -> list[Candidate]:
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -243,7 +303,13 @@ def search_youtube(query: str, limit: int = 8, expected_duration: float | None =
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
     entries = list((info or {}).get("entries") or [])
-    return rank_candidates(query, entries, expected_duration)
+    return rank_candidates(
+        query,
+        entries,
+        expected_duration,
+        avoid_versions=avoid_versions,
+        prefer_versions=prefer_versions,
+    )
 
 
 def decide_match(ranked: list[Candidate]) -> MatchDecision:
