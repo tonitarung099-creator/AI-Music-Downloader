@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -12,7 +13,14 @@ from yt_dlp import YoutubeDL
 
 from app.config import AppConfig
 from app.models import TrackRequest, TrackStatus
-from app.services.downloader import DownloadCancelled, DownloadEngine
+from app.services.downloader import (
+    CandidateReviewRequired,
+    DownloadCancelled,
+    DownloadEngine,
+    DownloadResult,
+    DownloadVerificationError,
+    serialize_review_candidates,
+)
 from app.services.errors import classify_exception, retry_delay_seconds
 from app.services.gemini_agent import GeminiAgent
 from app.services.spotify import SpotifyResolverError, resolve_spotify
@@ -133,6 +141,12 @@ class ImportWorker(QThread):
                     metadata["spotify_url"] = item.source_url
                 if item.source_id:
                     metadata["spotify_track_id"] = item.source_id
+                if getattr(item, "album", None):
+                    metadata["album"] = item.album
+                if getattr(item, "track_number", None):
+                    metadata["track_number"] = item.track_number
+                if getattr(item, "year", None):
+                    metadata["year"] = item.year
                 tracks.append(self._new_track(
                     index=index,
                     query=item.query,
@@ -292,10 +306,27 @@ class QueueWorker(QThread):
         except QueueStorageError as exc:
             self.log.emit(f"Peringatan penyimpanan antrean: {exc}")
 
+    @staticmethod
+    def _require_verified_result(result: object) -> DownloadResult:
+        if not isinstance(result, DownloadResult):
+            raise DownloadVerificationError(
+                "Downloader tidak mengembalikan DownloadResult terverifikasi."
+            )
+        if not result.verified or not result.final_path or not result.source_id:
+            raise DownloadVerificationError("Hasil download belum lolos verifikasi audio.")
+        path = Path(result.final_path).expanduser()
+        try:
+            if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+                raise DownloadVerificationError("File final terverifikasi tidak ditemukan atau kosong.")
+        except OSError as exc:
+            raise DownloadVerificationError(f"File final tidak dapat diperiksa: {exc}") from exc
+        return result
+
     def run(self) -> None:
         done = failed = cancelled = 0
+        review_count = 0
         for track in self.tracks:
-            if track.status == TrackStatus.DONE:
+            if track.status in {TrackStatus.DONE, TrackStatus.NEEDS_REVIEW}:
                 continue
             if self.stop_event.is_set() or self.isInterruptionRequested():
                 break
@@ -340,7 +371,7 @@ class QueueWorker(QThread):
                             last_progress_bucket = bucket
                             self._checkpoint(track)
 
-                    self.engine.download(
+                    raw_result = self.engine.download(
                         track,
                         output_dir=self.config.output_dir,
                         audio_mode=self.config.audio_mode,
@@ -348,6 +379,12 @@ class QueueWorker(QThread):
                         pause_event=self.pause_event,
                         stop_event=self.stop_event,
                     )
+                    result = self._require_verified_result(raw_result)
+                    track.output_path = result.final_path
+                    track.metadata["verified_container"] = result.container
+                    track.metadata["verified_audio_codec"] = result.audio_codec
+                    track.metadata["verified_duration"] = result.duration
+                    track.metadata["verified_size_bytes"] = result.size_bytes
                     track.status = TrackStatus.DONE
                     track.progress = 100.0
                     track.error = ""
@@ -358,10 +395,30 @@ class QueueWorker(QThread):
                         track.job_id,
                         track.status.value,
                         100.0,
-                        track.resolved_title or "Selesai",
+                        f"{result.audio_codec} • {result.container} • terverifikasi",
                     )
+                    if result.metadata_warning:
+                        self.log.emit(f"Metadata {track.display_name}: {result.metadata_warning}")
                     done += 1
                     success = True
+                    terminal = True
+                    break
+                except CandidateReviewRequired as exc:
+                    track.status = TrackStatus.NEEDS_REVIEW
+                    track.progress = 0.0
+                    track.error = ""
+                    track.error_code = "NEEDS_REVIEW"
+                    track.error_retryable = False
+                    track.metadata["review_candidates"] = serialize_review_candidates(exc.candidates)
+                    self._checkpoint(track, event="needs_review", detail=str(exc))
+                    self.item_changed.emit(
+                        track.job_id,
+                        track.status.value,
+                        0.0,
+                        "Pilih kandidat secara manual; item lain tetap dilanjutkan.",
+                    )
+                    self.log.emit(f"Perlu ditinjau: {track.display_name}")
+                    review_count += 1
                     terminal = True
                     break
                 except DownloadCancelled:
@@ -433,8 +490,6 @@ class QueueWorker(QThread):
             if not success and not terminal and (
                 self.stop_event.is_set() or self.isInterruptionRequested()
             ):
-                # Stop only cancels the currently active job. Jobs that have not
-                # started remain queued and can be resumed later or after restart.
                 track.status = TrackStatus.CANCELLED
                 track.error = "Dibatalkan pengguna."
                 track.error_code = "CANCELLED"
@@ -445,4 +500,6 @@ class QueueWorker(QThread):
                 break
 
         self.current_job_id = None
+        if review_count:
+            self.log.emit(f"{review_count} item menunggu tinjauan kandidat.")
         self.finished_summary.emit(done, failed, cancelled)
