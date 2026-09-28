@@ -48,23 +48,26 @@ jobs:
       - name: Compile Python files
         run: python -m compileall -q .
 
-      - name: UI smoke test - production v3
+      - name: UI smoke test - production facade
         env:
           PYTHONPATH: .
           QT_QPA_PLATFORM: offscreen
         run: |
           python - <<'PY'
           from PySide6.QtWidgets import QApplication
-          from app.ui.main_window_v3 import MainWindow
+          from app.ui.production_window import MainWindow
 
           app = QApplication([])
           window = MainWindow()
           assert window.windowTitle() == "AI Music Downloader"
+          assert window.minimumWidth() <= 960
+          assert window.agent_toggle_btn.text() in {"Sembunyikan Gemini", "Tampilkan Gemini"}
           window.close()
-          print("UI_V3_SMOKE_OK")
+          print("UI_PRODUCTION_SMOKE_OK")
           PY
 
       - name: Run tests
         env:
           PYTHONPATH: .
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q -rxX
