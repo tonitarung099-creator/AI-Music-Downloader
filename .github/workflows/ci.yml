@@ -61,7 +61,12 @@ jobs:
           window = MainWindow()
           assert window.windowTitle() == "AI Music Downloader"
           assert window.minimumWidth() <= 960
-          assert window.agent_toggle_btn.text() in {"Sembunyikan Gemini", "Tampilkan Gemini"}
+          assert window.agent_toggle_btn.text() == "Sembunyikan Gemini"
+          window.toggle_agent_panel()
+          assert window._right_card.isHidden()
+          assert window.agent_toggle_btn.text() == "Tampilkan Gemini"
+          window.toggle_agent_panel()
+          assert not window._right_card.isHidden()
           window.close()
           print("UI_PRODUCTION_SMOKE_OK")
           PY
