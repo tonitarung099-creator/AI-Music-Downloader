@@ -15,6 +15,8 @@ class TrackStatus(str, Enum):
     SEARCHING = "Mencari"
     DOWNLOADING = "Mengunduh"
     PAUSED = "Dijeda"
+    RETRY_WAIT = "Menunggu Retry"
+    INTERRUPTED = "Terinterupsi"
     DONE = "Selesai"
     FAILED = "Gagal"
     CANCELLED = "Dibatalkan"
@@ -36,6 +38,11 @@ class TrackRequest:
     resolved_title: str | None = None
     job_id: str = field(default_factory=_new_id)
     batch_id: str = ""
+    dedup_key: str = ""
+    output_path: str | None = None
+    attempt_count: int = 0
+    error_code: str = ""
+    error_retryable: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
