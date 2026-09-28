@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import ConfigSaveError, app_root
+from app.models import TrackStatus
 from app.services.secure_keys import WindowsDpapiKeyStore
+from app.storage import QueueStorageError
 from app.ui.main_window_v3 import MainWindow as Stage4MainWindow
 from app.ui.main_window_v3 import MaskedApiKeysDialog
 from app.ui.stage5 import Stage5UiMixin
@@ -125,6 +127,78 @@ class MainWindow(Stage5UiMixin, Stage4MainWindow):
         self.pause_btn.setText("Lanjutkan" if self._paused else "Jeda")
         self._refresh_agent_status()
         self.apply_queue_filter()
+        self._install_selected_retry_action()
+
+    def _install_selected_retry_action(self) -> None:
+        self.retry_selected_btn = QPushButton("Coba Lagi Terpilih", self)
+        self.retry_selected_btn.setToolTip(
+            "Mencoba lagi hanya lagu gagal/dibatalkan yang sedang dipilih, berdasarkan job ID."
+        )
+        self.retry_selected_btn.clicked.connect(self.retry_selected_failed)
+        toolbar = self.remove_selected_btn.parentWidget()
+        if toolbar is not None and toolbar.layout() is not None:
+            action_item = toolbar.layout().itemAt(1)
+            action_layout = action_item.layout() if action_item is not None else None
+            if action_layout is not None:
+                action_layout.insertWidget(1, self.retry_selected_btn)
+                return
+        self.statusBar().addPermanentWidget(self.retry_selected_btn)
+
+    def retry_selected_failed(self) -> None:
+        if self.coordinator.closing:
+            return
+        if self.import_worker and self.import_worker.isRunning():
+            self.log("Tunggu import selesai sebelum mencoba lagi item terpilih.")
+            return
+        if self.queue_worker and self.queue_worker.isRunning():
+            self.log("Antrean masih berjalan; hentikan atau tunggu selesai sebelum retry terpilih.")
+            return
+
+        selected_ids = self._selected_job_ids()
+        if not selected_ids:
+            QMessageBox.information(
+                self,
+                "Belum ada pilihan",
+                "Pilih satu atau beberapa item Gagal/Dibatalkan yang ingin dicoba lagi.",
+            )
+            return
+        targets = [
+            track
+            for track in self.tracks
+            if track.job_id in selected_ids
+            and track.status in {TrackStatus.FAILED, TrackStatus.CANCELLED}
+        ]
+        if not targets:
+            QMessageBox.information(
+                self,
+                "Tidak ada target retry",
+                "Item yang dipilih tidak berstatus Gagal atau Dibatalkan.",
+            )
+            return
+
+        target_ids = {track.job_id for track in targets}
+        for track in targets:
+            track.status = TrackStatus.QUEUED
+            track.progress = 0.0
+            track.error = ""
+            track.error_code = ""
+            track.error_retryable = False
+            self._on_item_changed(
+                track.job_id,
+                TrackStatus.QUEUED.value,
+                0.0,
+                "Siap dicoba lagi",
+            )
+
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.record_retry_requested(target_ids)
+                self.queue_repo.checkpoint_many(targets, event="retry_selected")
+            except QueueStorageError as exc:
+                self.log(f"Peringatan persistensi retry terpilih: {exc}")
+
+        self.log(f"Mencoba lagi {len(targets)} item terpilih berdasarkan job ID.")
+        self._start_job_ids(target_ids)
 
     def manage_api_keys(self) -> None:
         secure_store = WindowsDpapiKeyStore()
