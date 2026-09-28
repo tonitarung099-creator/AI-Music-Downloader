@@ -153,8 +153,11 @@ class DownloadEngine:
 
         source_id = str(info.get("id") or "").strip()
         if source_id:
+            marker = f"[{source_id}]"
             try:
-                expanded.extend(destination.glob(f"*[{source_id}].*"))
+                for child in destination.iterdir():
+                    if child.is_file() and marker in child.name:
+                        expanded.append(child)
             except OSError:
                 pass
 
