@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -10,7 +13,13 @@ from yt_dlp import YoutubeDL
 from app.config import app_root
 from app.models import TrackRequest, TrackStatus
 from app.services.gemini_agent import GeminiAgent
-from app.services.matcher import Candidate, is_ambiguous, search_youtube
+from app.services.matcher import (
+    Candidate,
+    MatchState,
+    candidate_to_dict,
+    decide_match,
+    search_youtube,
+)
 
 
 ProgressCallback = Callable[[float, str], None]
@@ -18,6 +27,38 @@ ProgressCallback = Callable[[float, str], None]
 
 class DownloadCancelled(RuntimeError):
     pass
+
+
+class CandidateReviewRequired(RuntimeError):
+    def __init__(self, message: str, candidates: list[Candidate]) -> None:
+        super().__init__(message)
+        self.candidates = list(candidates[:6])
+
+
+class DownloadVerificationError(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class DownloadResult:
+    final_path: str
+    source_id: str
+    source_url: str
+    title: str
+    container: str
+    audio_codec: str
+    duration: float | None
+    size_bytes: int
+    verified: bool
+    metadata_warning: str = ""
+
+
+@dataclass(slots=True)
+class AudioProbe:
+    container: str
+    audio_codec: str
+    duration: float | None
+    size_bytes: int
 
 
 class DownloadEngine:
@@ -32,6 +73,13 @@ class DownloadEngine:
         system = shutil.which("ffmpeg")
         return str(Path(system).parent) if system else None
 
+    @staticmethod
+    def ffprobe_path() -> str | None:
+        portable = app_root() / "tools" / "ffprobe.exe"
+        if portable.exists():
+            return str(portable)
+        return shutil.which("ffprobe")
+
     def resolve_candidate(
         self,
         track: TrackRequest,
@@ -43,20 +91,44 @@ class DownloadEngine:
         ranked = search_youtube(track.query, limit=8, expected_duration=track.duration)
         if stop_event and stop_event.is_set():
             raise DownloadCancelled("Dibatalkan pengguna.")
-        if not ranked:
-            raise RuntimeError("Tidak menemukan kandidat YouTube.")
 
-        chosen = ranked[0]
-        if is_ambiguous(ranked) and self.gemini and self.gemini.available:
+        decision = decide_match(ranked)
+        track.metadata["match_state"] = decision.state.value
+        track.metadata["match_top_score"] = round(decision.top_score, 6)
+        track.metadata["match_margin"] = None if decision.margin == float("inf") else round(decision.margin, 6)
+        track.metadata["match_reason"] = decision.reason
+
+        if decision.state == MatchState.NO_MATCH:
+            raise RuntimeError(
+                "Tidak ada kandidat YouTube dengan bukti yang cukup cocok. "
+                f"{decision.reason}"
+            )
+
+        if decision.state == MatchState.MATCHED and decision.candidate is not None:
+            return decision.candidate
+
+        if self.gemini and self.gemini.available:
             idx = self.gemini.choose_candidate(track.query, ranked, cancel_event=stop_event)
             if stop_event and stop_event.is_set():
                 raise DownloadCancelled("Dibatalkan pengguna.")
             if idx is not None:
                 chosen = ranked[idx]
-        return chosen
+                track.metadata["match_state"] = "MATCHED_GEMINI"
+                track.metadata["match_reason"] = "Ambiguitas lokal dipilih Gemini di atas batas confidence dan evidence."
+                return chosen
+
+        raise CandidateReviewRequired(
+            "Kandidat lagu masih ambigu dan perlu dipilih pengguna.",
+            decision.candidates,
+        )
 
     @staticmethod
-    def _best_effort_output_path(info: dict, ydl: YoutubeDL, audio_mode: str) -> str | None:
+    def _best_effort_output_path(
+        info: dict,
+        ydl: YoutubeDL,
+        audio_mode: str,
+        destination: Path,
+    ) -> str | None:
         candidates: list[Path] = []
         requested = info.get("requested_downloads") or []
         if isinstance(requested, list):
@@ -78,13 +150,103 @@ class DownloadEngine:
             if audio_mode == "mp3":
                 expanded.append(candidate.with_suffix(".mp3"))
 
+        source_id = str(info.get("id") or "").strip()
+        if source_id:
+            try:
+                expanded.extend(destination.glob(f"*[{source_id}].*"))
+            except OSError:
+                pass
+
+        seen: set[str] = set()
         for candidate in expanded:
             try:
-                if candidate.exists() and candidate.is_file():
-                    return str(candidate.resolve())
+                resolved = candidate.expanduser().resolve()
+            except OSError:
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            if resolved.suffix.lower() in {".part", ".ytdl", ".temp", ".tmp"}:
+                continue
+            try:
+                if resolved.exists() and resolved.is_file() and resolved.stat().st_size > 0:
+                    return str(resolved)
             except OSError:
                 continue
         return None
+
+    def _probe_audio(self, path: str) -> AudioProbe:
+        target = Path(path).expanduser().resolve()
+        try:
+            size = target.stat().st_size
+        except OSError as exc:
+            raise DownloadVerificationError(f"File hasil download tidak dapat dibaca: {exc}") from exc
+        if size <= 0:
+            raise DownloadVerificationError("File hasil download kosong.")
+
+        ffprobe = self.ffprobe_path()
+        if not ffprobe:
+            raise DownloadVerificationError(
+                "FFprobe tidak tersedia untuk memverifikasi hasil audio. "
+                "Gunakan paket portable lengkap dengan folder tools."
+            )
+
+        command = [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=format_name,duration:stream=codec_type,codec_name",
+            "-of",
+            "json",
+            str(target),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DownloadVerificationError(f"FFprobe gagal dijalankan: {exc}") from exc
+
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise DownloadVerificationError(
+                "File hasil download gagal diverifikasi oleh FFprobe"
+                + (f": {detail[-240:]}" if detail else ".")
+            )
+
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise DownloadVerificationError("Output FFprobe tidak valid.") from exc
+
+        streams = payload.get("streams") or []
+        audio_streams = [
+            stream for stream in streams
+            if isinstance(stream, dict) and stream.get("codec_type") == "audio"
+        ]
+        if not audio_streams:
+            raise DownloadVerificationError("File hasil download tidak memiliki stream audio.")
+
+        fmt = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+        duration_raw = fmt.get("duration")
+        try:
+            duration = float(duration_raw) if duration_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            duration = None
+        if duration is not None and duration <= 0:
+            raise DownloadVerificationError("Durasi audio hasil download tidak valid.")
+
+        container = str(fmt.get("format_name") or target.suffix.lstrip(".") or "unknown")
+        codec = str(audio_streams[0].get("codec_name") or "unknown")
+        return AudioProbe(container=container, audio_codec=codec, duration=duration, size_bytes=size)
 
     def download(
         self,
@@ -94,7 +256,7 @@ class DownloadEngine:
         progress_cb: ProgressCallback | None = None,
         pause_event: threading.Event | None = None,
         stop_event: threading.Event | None = None,
-    ) -> dict:
+    ) -> DownloadResult:
         if stop_event and stop_event.is_set():
             raise DownloadCancelled("Dibatalkan pengguna.")
 
@@ -113,6 +275,7 @@ class DownloadEngine:
             track.resolved_title = candidate.title
             track.metadata["match_score"] = candidate.score
             track.metadata["matched_channel"] = candidate.uploader
+            track.metadata.pop("review_candidates", None)
             url = candidate.url
 
         if stop_event and stop_event.is_set():
@@ -142,12 +305,23 @@ class DownloadEngine:
                 detail = " ".join(x for x in (speed, f"ETA {eta}" if eta else "") if x).strip()
                 progress_cb(pct, detail or "Mengunduh...")
             elif status == "finished":
-                progress_cb(100.0, "Download selesai, memproses file...")
+                track.status = TrackStatus.POSTPROCESSING
+                progress_cb(99.0, "Download selesai, memproses audio...")
 
-        # File identity must not depend on queue order. yt-dlp media ID keeps the
-        # filename stable even when rows are reordered between sessions.
+        def postprocessor_hook(data: dict) -> None:
+            if stop_event and stop_event.is_set():
+                raise DownloadCancelled("Dibatalkan pengguna.")
+            track.status = TrackStatus.POSTPROCESSING
+            if progress_cb:
+                status = str(data.get("status") or "").lower()
+                if status == "started":
+                    progress_cb(99.0, "Memproses format audio...")
+                elif status == "finished":
+                    progress_cb(99.0, "Pemrosesan audio selesai...")
+
         opts: dict = {
-            "format": "bestaudio/best",
+            # Original means audio-only source with no extra lossy transcode.
+            "format": "bestaudio",
             "outtmpl": str(destination / "%(title).160B [%(id)s].%(ext)s"),
             "noplaylist": True,
             "quiet": True,
@@ -155,13 +329,12 @@ class DownloadEngine:
             "windowsfilenames": True,
             "overwrites": False,
             "continuedl": True,
-            # Retry ownership lives in QueueWorker so one failure does not create
-            # nested retry storms inside yt-dlp and the queue scheduler.
             "retries": 0,
             "fragment_retries": 0,
             "extractor_retries": 1,
             "socket_timeout": 15,
             "progress_hooks": [hook],
+            "postprocessor_hooks": [postprocessor_hook],
         }
 
         ffmpeg = self.ffmpeg_location()
@@ -169,10 +342,13 @@ class DownloadEngine:
             opts["ffmpeg_location"] = ffmpeg
 
         if audio_mode == "m4a":
-            opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+            # Preference only. If M4A does not exist, keep the best original
+            # audio stream instead of silently transcoding it to M4A.
+            opts["format"] = "bestaudio[ext=m4a]/bestaudio"
         elif audio_mode == "mp3":
             if not ffmpeg:
                 raise RuntimeError("Mode MP3 membutuhkan FFmpeg. Letakkan FFmpeg di tools/ atau PATH.")
+            opts["format"] = "bestaudio"
             opts["postprocessors"] = [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -185,14 +361,44 @@ class DownloadEngine:
 
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True) or {}
-            if info:
-                track.output_path = self._best_effort_output_path(info, ydl, audio_mode)
+            final_path = self._best_effort_output_path(info, ydl, audio_mode, destination)
 
         if stop_event and stop_event.is_set():
             raise DownloadCancelled("Dibatalkan pengguna.")
+        if not info or not info.get("id"):
+            raise DownloadVerificationError("Downloader tidak mengembalikan identitas media yang valid.")
+        if not final_path:
+            raise DownloadVerificationError("File final hasil download tidak ditemukan.")
 
-        if info.get("id"):
-            track.metadata["source_media_id"] = str(info["id"])
+        track.status = TrackStatus.VERIFYING
+        if progress_cb:
+            progress_cb(99.0, "Memverifikasi stream audio dengan FFprobe...")
+        probe = self._probe_audio(final_path)
+
+        track.output_path = final_path
+        track.metadata["source_media_id"] = str(info.get("id") or "")
         if info.get("extractor_key"):
             track.metadata["source_extractor"] = str(info["extractor_key"])
-        return info
+        track.metadata["verified_container"] = probe.container
+        track.metadata["verified_audio_codec"] = probe.audio_codec
+        track.metadata["verified_duration"] = probe.duration
+        track.metadata["verified_size_bytes"] = probe.size_bytes
+
+        if progress_cb:
+            progress_cb(100.0, "Audio terverifikasi.")
+
+        return DownloadResult(
+            final_path=final_path,
+            source_id=str(info.get("id") or ""),
+            source_url=str(info.get("webpage_url") or url),
+            title=str(info.get("title") or track.resolved_title or track.display_name),
+            container=probe.container,
+            audio_codec=probe.audio_codec,
+            duration=probe.duration,
+            size_bytes=probe.size_bytes,
+            verified=True,
+        )
+
+
+def serialize_review_candidates(candidates: list[Candidate]) -> list[dict]:
+    return [candidate_to_dict(candidate) for candidate in candidates[:6]]
