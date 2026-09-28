@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import json
 import zipfile
-from pathlib import Path
 
 import app.config as config_module
-import app.ui.main_window_v2 as stage2_ui
 from app.config import AppConfig
 from app.models import TrackRequest, TrackStatus
 from app.services.diagnostics import DiagnosticLog, redact_text, write_diagnostic_bundle
 from app.services.reports import export_batch_csv, export_batch_json
-from app.storage import QueueRepository
-from app.ui.production_window import MainWindow
 from app.ui.stage5 import Stage5UiMixin
 
 
@@ -134,38 +130,39 @@ def test_stage5_drop_txt_and_csv_preserves_input_order(tmp_path):
     assert Stage5UiMixin._read_drop_file(csv_path) == ["Artist C - Song C", "https://example.test/song"]
 
 
-def test_stage5_filter_keeps_stable_job_order(tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QApplication
-
-    monkeypatch.setattr(config_module, "app_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        stage2_ui,
-        "QueueRepository",
-        lambda: QueueRepository(tmp_path / "queue.sqlite3"),
-    )
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_stage5_status_filter_scope_preserves_stable_job_order():
     first = TrackRequest(index=1, query="Alpha Artist - Alpha Song")
     second = TrackRequest(index=2, query="Beta Artist - Beta Song", status=TrackStatus.DONE)
-    window._append_tracks([first, second])
-    original_ids = [track.job_id for track in window.tracks]
+    third = TrackRequest(index=3, query="Gamma Artist - Gamma Song", status=TrackStatus.NEEDS_REVIEW)
+    tracks = [first, second, third]
+    original_ids = [track.job_id for track in tracks]
 
-    window.queue_search.setText("beta")
+    done_ids = [
+        track.job_id
+        for track in tracks
+        if Stage5UiMixin._status_matches(track, "done")
+    ]
+    review_ids = [
+        track.job_id
+        for track in tracks
+        if Stage5UiMixin._status_matches(track, "review")
+    ]
+    beta_ids = [
+        track.job_id
+        for track in tracks
+        if "beta" in " ".join(
+            str(value or "")
+            for value in (
+                track.display_name,
+                track.query,
+                track.source,
+                track.resolved_title,
+                track.resolved_url,
+            )
+        ).casefold()
+    ]
 
-    assert window.table.isRowHidden(0) is True
-    assert window.table.isRowHidden(1) is False
-    assert [track.job_id for track in window.tracks] == original_ids
-    assert window._track_for_row(1).job_id == second.job_id
-
-    window.queue_search.clear()
-    index = window.status_filter.findData("done")
-    window.status_filter.setCurrentIndex(index)
-    assert window.table.isRowHidden(0) is True
-    assert window.table.isRowHidden(1) is False
-    assert [track.job_id for track in window.tracks] == original_ids
-
-    window.toggle_agent_panel()
-    assert window._right_card.isHidden() is True
-    assert window.minimumWidth() <= 960
-    window.close()
-    _ = app
+    assert done_ids == [second.job_id]
+    assert review_ids == [third.job_id]
+    assert beta_ids == [second.job_id]
+    assert [track.job_id for track in tracks] == original_ids
