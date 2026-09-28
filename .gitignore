@@ -6,6 +6,8 @@ venv/
 config.json
 output/
 downloads/
+data/*.sqlite3
+data/*.sqlite3-*
 *.part
 *.ytdl
 *.spotdl

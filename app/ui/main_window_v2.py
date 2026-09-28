@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from app.config import ConfigSaveError, resolve_output_dir
 from app.controllers.lifecycle import OperationCoordinator
-from app.models import TrackStatus
+from app.models import TrackRequest, TrackStatus
+from app.storage import QueueRepository, QueueStorageError
 from app.ui.main_window import MainWindow as BaseMainWindow
-from app.workers import ImportResult, ImportWorker
+from app.workers import ImportResult, ImportWorker, QueueWorker
+
+
+RUNNABLE_STATUSES = {TrackStatus.QUEUED, TrackStatus.INTERRUPTED}
+RETRYABLE_BY_USER_STATUSES = {TrackStatus.FAILED, TrackStatus.CANCELLED}
 
 
 class MainWindow(BaseMainWindow):
@@ -17,7 +23,25 @@ class MainWindow(BaseMainWindow):
     def __init__(self) -> None:
         self._start_after_import_id: str | None = None
         self.coordinator = OperationCoordinator()
+        self.queue_repo: QueueRepository | None = None
         super().__init__()
+        self._open_queue_repository()
+
+    def _open_queue_repository(self) -> None:
+        try:
+            self.queue_repo = QueueRepository()
+            restored = self.queue_repo.restore_queue()
+        except QueueStorageError as exc:
+            self.queue_repo = None
+            self.log(f"Peringatan: antrean berjalan tanpa persistensi SQLite. {exc}")
+            return
+
+        if not restored:
+            return
+        BaseMainWindow._append_tracks(self, restored)
+        interrupted = sum(1 for track in restored if track.status == TrackStatus.INTERRUPTED)
+        suffix = f" • {interrupted} terinterupsi siap dilanjutkan" if interrupted else ""
+        self.log(f"Memulihkan {len(restored)} item dari antrean sebelumnya{suffix}.")
 
     def import_input(self) -> str | None:
         text = self.input_text.toPlainText().strip()
@@ -57,7 +81,7 @@ class MainWindow(BaseMainWindow):
             return
 
         if result.tracks:
-            super()._append_tracks(result.tracks)
+            self._append_tracks(result.tracks)
         elif not result.cancelled:
             self.log("Tidak ada item valid yang berhasil diimpor.")
 
@@ -67,6 +91,38 @@ class MainWindow(BaseMainWindow):
             )
         if result.cancelled:
             self.log("Import dibatalkan.")
+
+    def _append_tracks(self, tracks: list[TrackRequest]) -> None:
+        if not tracks:
+            return
+        items = tracks
+        duplicates = []
+        if self.queue_repo is not None:
+            try:
+                result = self.queue_repo.add_tracks(tracks)
+                items = result.added
+                duplicates = result.duplicates
+            except QueueStorageError as exc:
+                self.log(f"Peringatan persistensi: {exc}")
+
+        if items:
+            BaseMainWindow._append_tracks(self, items)
+        if duplicates:
+            done_duplicates = sum(1 for item in duplicates if item.status == TrackStatus.DONE.value)
+            self.log(
+                f"{len(duplicates)} duplikat tidak ditambahkan"
+                + (f" • {done_duplicates} sudah pernah selesai" if done_duplicates else "")
+                + "."
+            )
+        if not items and duplicates:
+            self.input_text.clear()
+
+    def _insert_track_row(self, track: TrackRequest) -> None:
+        BaseMainWindow._insert_track_row(self, track)
+        row = self.table.rowCount() - 1
+        item = self.table.item(row, 0)
+        if item is not None:
+            item.setData(Qt.UserRole, track.job_id)
 
     def _import_thread_finished(self, import_id: str, worker: ImportWorker) -> None:
         was_current = self.coordinator.finish_import(import_id)
@@ -86,12 +142,24 @@ class MainWindow(BaseMainWindow):
             self.start_download()
 
     def clear_queue(self) -> None:
+        if self.queue_worker and self.queue_worker.isRunning():
+            QMessageBox.information(self, "Sedang download", "Stop download sebelum menghapus antrean.")
+            return
         if self.import_worker and self.import_worker.isRunning():
             self.coordinator.invalidate_import()
             self._start_after_import_id = None
             self.import_worker.cancel()
             self.log("Import aktif dibatalkan; hasil terlambat akan diabaikan.")
-        super().clear_queue()
+
+        ids = [track.job_id for track in self.tracks]
+        if ids and self.queue_repo is not None:
+            try:
+                self.queue_repo.remove_jobs(ids, detail="Antrean dikosongkan")
+            except QueueStorageError as exc:
+                self.log(str(exc))
+                QMessageBox.warning(self, "Antrean tidak dapat dihapus", str(exc))
+                return
+        BaseMainWindow.clear_queue(self)
 
     def _save_download_settings(self) -> None:
         self.config.output_dir = resolve_output_dir(self.output_edit.text())
@@ -103,6 +171,49 @@ class MainWindow(BaseMainWindow):
         self.output_edit.setText(resolve_output_dir(self.output_edit.text()))
         super().open_output_folder()
 
+    def _launch_tracks(self, pending: list[TrackRequest]) -> bool:
+        if not pending:
+            return False
+
+        batch_id = uuid4().hex
+        for track in pending:
+            track.batch_id = batch_id
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.checkpoint_many(pending, event="batch_queued")
+            except QueueStorageError as exc:
+                self.log(f"Peringatan persistensi: {exc}")
+
+        try:
+            self._save_download_settings()
+        except ConfigSaveError as exc:
+            self.log(str(exc))
+            QMessageBox.warning(self, "Pengaturan tidak dapat disimpan", str(exc))
+            return False
+
+        self.gemini.model = self.config.gemini_model
+        worker = QueueWorker(
+            pending,
+            self.config,
+            self.gemini,
+            parent=self,
+            repository=self.queue_repo,
+        )
+        self.queue_worker = worker
+        worker.item_changed.connect(self._on_item_changed)
+        worker.log.connect(self.log)
+        worker.finished_summary.connect(self._on_queue_finished)
+        worker.finished.connect(self._queue_thread_finished)
+
+        self.coordinator.begin_queue(batch_id)
+        self.start_btn.setEnabled(False)
+        self.add_btn.setEnabled(False)
+        self._paused = False
+        self.pause_btn.setText("⏸ Jeda")
+        self.log(f"Mulai download {len(pending)} item...")
+        worker.start()
+        return True
+
     def start_download(self) -> None:
         if self.coordinator.closing:
             return
@@ -111,25 +222,32 @@ class MainWindow(BaseMainWindow):
             return
         if self.queue_worker and self.queue_worker.isRunning():
             return
-
-        pending = [track for track in self.tracks if track.status != TrackStatus.DONE]
-        batch_id = uuid4().hex
-        for track in pending:
-            track.batch_id = batch_id
-
-        try:
-            super().start_download()
-        except ConfigSaveError as exc:
-            self.log(str(exc))
-            QMessageBox.warning(self, "Pengaturan tidak dapat disimpan", str(exc))
+        if not self.tracks:
+            QMessageBox.information(self, "Antrean kosong", "Tambahkan lagu ke antrean terlebih dahulu.")
             return
 
-        if self.queue_worker is not None and self.queue_worker.isRunning():
-            self.coordinator.begin_queue(batch_id)
+        pending = [track for track in self.tracks if track.status in RUNNABLE_STATUSES]
+        if not pending:
+            if all(track.status == TrackStatus.DONE for track in self.tracks):
+                QMessageBox.information(self, "Selesai", "Semua lagu di antrean sudah selesai.")
+            else:
+                self.log("Tidak ada item menunggu. Gunakan Retry Gagal untuk item gagal/dibatalkan.")
+            return
+        self._launch_tracks(pending)
+
+    def _start_job_ids(self, job_ids: set[str]) -> None:
+        if not job_ids:
+            return
+        pending = [
+            track
+            for track in self.tracks
+            if track.job_id in job_ids and track.status in RUNNABLE_STATUSES
+        ]
+        self._launch_tracks(pending)
 
     def _on_item_changed(self, job_id, status: str, progress: float, detail: str) -> None:
-        # QueueWorker now identifies rows by stable job_id. Keep compatibility
-        # with any legacy/manual calls that still pass an integer row.
+        # QueueWorker identifies rows by stable job_id. Keep compatibility with
+        # legacy/manual calls that still pass an integer row.
         if isinstance(job_id, int):
             row = job_id
         else:
@@ -143,7 +261,7 @@ class MainWindow(BaseMainWindow):
 
     def _queue_thread_finished(self) -> None:
         batch_id = self.coordinator.queue_batch_id
-        super()._queue_thread_finished()
+        BaseMainWindow._queue_thread_finished(self)
         if batch_id is not None:
             self.coordinator.finish_queue(batch_id)
 
@@ -157,19 +275,95 @@ class MainWindow(BaseMainWindow):
             self.log("Antrean masih berjalan; retry ditunda.")
             return
 
-        changed = 0
-        for track in self.tracks:
-            if track.status in (TrackStatus.FAILED, TrackStatus.CANCELLED):
-                track.status = TrackStatus.QUEUED
-                track.progress = 0.0
-                track.error = ""
-                self._on_item_changed(track.job_id, TrackStatus.QUEUED.value, 0.0, "Siap dicoba lagi")
-                changed += 1
-        if changed:
-            self.log(f"{changed} item disiapkan untuk retry.")
-            self.start_download()
-        else:
+        targets = [track for track in self.tracks if track.status in RETRYABLE_BY_USER_STATUSES]
+        target_ids = {track.job_id for track in targets}
+        if not targets:
             self.log("Tidak ada item gagal untuk di-retry.")
+            return
+
+        for track in targets:
+            track.status = TrackStatus.QUEUED
+            track.progress = 0.0
+            track.error = ""
+            track.error_code = ""
+            track.error_retryable = False
+            self._on_item_changed(track.job_id, TrackStatus.QUEUED.value, 0.0, "Siap dicoba lagi")
+
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.record_retry_requested(target_ids)
+                self.queue_repo.checkpoint_many(targets)
+            except QueueStorageError as exc:
+                self.log(f"Peringatan persistensi retry: {exc}")
+
+        self.log(f"{len(targets)} item gagal disiapkan untuk retry berdasarkan job ID.")
+        self._start_job_ids(target_ids)
+
+    def remove_jobs(self, job_ids: set[str]) -> int:
+        """Remove exactly the requested jobs; never infer scope from row numbers."""
+        if not job_ids or self.coordinator.closing:
+            return 0
+        if self.import_worker and self.import_worker.isRunning():
+            self.log("Tunggu import selesai sebelum menghapus item.")
+            return 0
+        if self.queue_worker and self.queue_worker.isRunning():
+            self.log("Hentikan antrean sebelum menghapus item.")
+            return 0
+
+        existing = {track.job_id for track in self.tracks}
+        targets = existing.intersection(job_ids)
+        if not targets:
+            return 0
+
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.remove_jobs(targets)
+            except QueueStorageError as exc:
+                self.log(str(exc))
+                return 0
+
+        self.tracks = [track for track in self.tracks if track.job_id not in targets]
+        self._rebuild_queue_table()
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.reorder(track.job_id for track in self.tracks)
+            except QueueStorageError as exc:
+                self.log(f"Peringatan urutan antrean: {exc}")
+        self.log(f"{len(targets)} item dihapus dari antrean.")
+        return len(targets)
+
+    def reorder_jobs(self, ordered_job_ids: list[str]) -> bool:
+        """Persist a full active ordering by stable job IDs."""
+        if self.coordinator.closing:
+            return False
+        if self.import_worker and self.import_worker.isRunning():
+            return False
+        if self.queue_worker and self.queue_worker.isRunning():
+            self.log("Urutan tidak dapat diubah saat download berjalan.")
+            return False
+
+        current_ids = [track.job_id for track in self.tracks]
+        if len(ordered_job_ids) != len(current_ids) or set(ordered_job_ids) != set(current_ids):
+            return False
+        mapping = {track.job_id: track for track in self.tracks}
+        self.tracks = [mapping[job_id] for job_id in ordered_job_ids]
+        self._rebuild_queue_table()
+
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.reorder(ordered_job_ids)
+            except QueueStorageError as exc:
+                self.log(str(exc))
+                return False
+        return True
+
+    def _rebuild_queue_table(self) -> None:
+        self.table.setRowCount(0)
+        for position, track in enumerate(self.tracks, start=1):
+            track.index = position
+            self._insert_track_row(track)
+        self.count_label.setText(f"{len(self.tracks)} lagu")
+        self._update_total_progress()
 
     def run_agent_command(self) -> None:
         """Fallback synchronous implementation; v3 overrides this with QThread."""

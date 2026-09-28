@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -12,8 +13,10 @@ from yt_dlp import YoutubeDL
 from app.config import AppConfig
 from app.models import TrackRequest, TrackStatus
 from app.services.downloader import DownloadCancelled, DownloadEngine
+from app.services.errors import classify_exception, retry_delay_seconds
 from app.services.gemini_agent import GeminiAgent
 from app.services.spotify import SpotifyResolverError, resolve_spotify
+from app.storage import QueueRepository, QueueStorageError
 
 
 URL_RE = re.compile(r"^https?://", re.I)
@@ -122,6 +125,14 @@ class ImportWorker(QThread):
             for item in spotify_tracks:
                 if self.stop_event.is_set():
                     break
+                metadata = {
+                    "import_source_url": line,
+                }
+                if item.source_url:
+                    metadata["canonical_source_url"] = item.source_url
+                    metadata["spotify_url"] = item.source_url
+                if item.source_id:
+                    metadata["spotify_track_id"] = item.source_id
                 tracks.append(self._new_track(
                     index=index,
                     query=item.query,
@@ -129,6 +140,7 @@ class ImportWorker(QThread):
                     title=item.title,
                     artist=item.artist,
                     duration=item.duration,
+                    metadata=metadata,
                 ))
                 index += 1
             return tracks, index
@@ -161,6 +173,7 @@ class ImportWorker(QThread):
                     direct_url=str(video_url),
                     title=str(title),
                     duration=entry.get("duration"),
+                    metadata={"import_source_url": line, "youtube_video_id": str(video_id or "")},
                 ))
                 index += 1
             return tracks, index
@@ -222,18 +235,28 @@ class QueueWorker(QThread):
     log = Signal(str)
     finished_summary = Signal(int, int, int)
 
-    def __init__(self, tracks: list[TrackRequest], config: AppConfig, gemini: GeminiAgent, parent=None) -> None:
+    def __init__(
+        self,
+        tracks: list[TrackRequest],
+        config: AppConfig,
+        gemini: GeminiAgent,
+        parent=None,
+        repository: QueueRepository | None = None,
+    ) -> None:
         super().__init__(parent)
         self.tracks = list(tracks)
+        self.target_job_ids = frozenset(track.job_id for track in self.tracks)
         self.config = config.snapshot()
         self.gemini = gemini
+        self.repository = repository
         self.pause_event = threading.Event()
         self.stop_event = threading.Event()
         self.engine = DownloadEngine(gemini)
+        self.current_job_id: str | None = None
 
     def pause(self) -> None:
         self.pause_event.set()
-        self.log.emit("Download dijeda.")
+        self.log.emit("Download dijeda pada titik aman berikutnya.")
 
     def resume(self) -> None:
         self.pause_event.clear()
@@ -249,41 +272,74 @@ class QueueWorker(QThread):
         while self.pause_event.is_set() and not self.stop_event.is_set():
             self.stop_event.wait(0.2)
 
+    def _wait_backoff(self, seconds: float) -> bool:
+        deadline = time.monotonic() + max(0.0, seconds)
+        while not self.stop_event.is_set() and not self.isInterruptionRequested():
+            self._wait_while_paused()
+            if self.stop_event.is_set() or self.isInterruptionRequested():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            self.stop_event.wait(min(0.2, remaining))
+        return False
+
+    def _checkpoint(self, track: TrackRequest, *, event: str | None = None, detail: str = "") -> None:
+        if not self.repository:
+            return
+        try:
+            self.repository.checkpoint(track, event=event, detail=detail)
+        except QueueStorageError as exc:
+            self.log.emit(f"Peringatan penyimpanan antrean: {exc}")
+
     def run(self) -> None:
         done = failed = cancelled = 0
         for track in self.tracks:
             if track.status == TrackStatus.DONE:
                 continue
-
             if self.stop_event.is_set() or self.isInterruptionRequested():
-                track.status = TrackStatus.CANCELLED
-                self.item_changed.emit(track.job_id, track.status.value, track.progress, "Dibatalkan")
-                cancelled += 1
-                continue
+                break
 
             self._wait_while_paused()
             if self.stop_event.is_set() or self.isInterruptionRequested():
-                track.status = TrackStatus.CANCELLED
-                self.item_changed.emit(track.job_id, track.status.value, track.progress, "Dibatalkan")
-                cancelled += 1
-                continue
+                break
 
+            self.current_job_id = track.job_id
             attempts = max(1, int(self.config.max_retries) + 1)
-            last_error = ""
             success = False
+            terminal = False
+
             for attempt in range(attempts):
                 if self.stop_event.is_set() or self.isInterruptionRequested():
                     break
                 self._wait_while_paused()
+                if self.stop_event.is_set() or self.isInterruptionRequested():
+                    break
 
+                track.attempt_count += 1
+                track.error = ""
+                track.error_code = ""
+                track.error_retryable = False
+                track.status = TrackStatus.SEARCHING
+                self._checkpoint(
+                    track,
+                    event="attempt_started",
+                    detail=f"Percobaan {attempt + 1}/{attempts}",
+                )
+                self.item_changed.emit(track.job_id, track.status.value, 0.0, "Menyiapkan...")
+
+                last_progress_bucket = -1
                 try:
                     def progress(pct: float, detail: str) -> None:
+                        nonlocal last_progress_bucket
                         track.progress = pct
                         status = TrackStatus.PAUSED.value if self.pause_event.is_set() else track.status.value
                         self.item_changed.emit(track.job_id, status, pct, detail)
+                        bucket = max(0, min(4, int(pct // 25)))
+                        if bucket != last_progress_bucket:
+                            last_progress_bucket = bucket
+                            self._checkpoint(track)
 
-                    track.status = TrackStatus.SEARCHING
-                    self.item_changed.emit(track.job_id, track.status.value, 0.0, "Menyiapkan...")
                     self.engine.download(
                         track,
                         output_dir=self.config.output_dir,
@@ -294,35 +350,99 @@ class QueueWorker(QThread):
                     )
                     track.status = TrackStatus.DONE
                     track.progress = 100.0
-                    self.item_changed.emit(track.job_id, track.status.value, 100.0, track.resolved_title or "Selesai")
+                    track.error = ""
+                    track.error_code = ""
+                    track.error_retryable = False
+                    self._checkpoint(track, event="completed", detail=track.output_path or "")
+                    self.item_changed.emit(
+                        track.job_id,
+                        track.status.value,
+                        100.0,
+                        track.resolved_title or "Selesai",
+                    )
                     done += 1
                     success = True
+                    terminal = True
                     break
                 except DownloadCancelled:
                     track.status = TrackStatus.CANCELLED
+                    track.error = "Dibatalkan pengguna."
+                    track.error_code = "CANCELLED"
+                    track.error_retryable = False
+                    self._checkpoint(track, event="cancelled", detail=track.error)
                     self.item_changed.emit(track.job_id, track.status.value, track.progress, "Dibatalkan")
                     cancelled += 1
+                    terminal = True
                     break
                 except Exception as exc:
                     if self.stop_event.is_set() or self.isInterruptionRequested():
                         track.status = TrackStatus.CANCELLED
+                        track.error = "Dibatalkan pengguna."
+                        track.error_code = "CANCELLED"
+                        track.error_retryable = False
+                        self._checkpoint(track, event="cancelled", detail=track.error)
                         self.item_changed.emit(track.job_id, track.status.value, track.progress, "Dibatalkan")
                         cancelled += 1
+                        terminal = True
                         break
-                    last_error = str(exc)
-                    if attempt + 1 < attempts:
+
+                    failure = classify_exception(exc)
+                    track.error = failure.message
+                    track.error_code = failure.kind.value
+                    track.error_retryable = failure.retryable
+                    self._checkpoint(track, event="attempt_failed", detail=failure.message[-300:])
+
+                    can_retry = failure.retryable and attempt + 1 < attempts
+                    if not can_retry:
+                        track.status = TrackStatus.FAILED
+                        self._checkpoint(track, event="failed", detail=failure.message[-300:])
                         self.item_changed.emit(
                             track.job_id,
-                            "Mencoba lagi",
+                            track.status.value,
                             track.progress,
-                            f"Retry {attempt + 1}/{attempts - 1}",
+                            failure.message[-180:],
                         )
-                        continue
+                        failed += 1
+                        terminal = True
+                        break
 
-            if not success and track.status != TrackStatus.CANCELLED:
-                track.status = TrackStatus.FAILED
-                track.error = last_error
-                self.item_changed.emit(track.job_id, track.status.value, track.progress, last_error[-180:])
-                failed += 1
+                    delay = retry_delay_seconds(track.job_id, attempt)
+                    track.status = TrackStatus.RETRY_WAIT
+                    self._checkpoint(
+                        track,
+                        event="retry_scheduled",
+                        detail=f"{failure.kind.value}; {delay:.1f} detik",
+                    )
+                    self.item_changed.emit(
+                        track.job_id,
+                        track.status.value,
+                        track.progress,
+                        f"Gangguan sementara • retry {attempt + 2}/{attempts} dalam {delay:.1f} dtk",
+                    )
+                    if not self._wait_backoff(delay):
+                        track.status = TrackStatus.CANCELLED
+                        track.error = "Dibatalkan pengguna."
+                        track.error_code = "CANCELLED"
+                        track.error_retryable = False
+                        self._checkpoint(track, event="cancelled", detail=track.error)
+                        self.item_changed.emit(track.job_id, track.status.value, track.progress, "Dibatalkan")
+                        cancelled += 1
+                        terminal = True
+                        break
 
+            if not success and not terminal and (
+                self.stop_event.is_set() or self.isInterruptionRequested()
+            ):
+                # Stop only cancels the currently active job. Jobs that have not
+                # started remain queued and can be resumed later or after restart.
+                track.status = TrackStatus.CANCELLED
+                track.error = "Dibatalkan pengguna."
+                track.error_code = "CANCELLED"
+                track.error_retryable = False
+                self._checkpoint(track, event="cancelled", detail=track.error)
+                self.item_changed.emit(track.job_id, track.status.value, track.progress, "Dibatalkan")
+                cancelled += 1
+                break
+
+        self.current_job_id = None
         self.finished_summary.emit(done, failed, cancelled)
