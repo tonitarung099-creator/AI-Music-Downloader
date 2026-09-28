@@ -55,6 +55,37 @@ class DownloadEngine:
                 chosen = ranked[idx]
         return chosen
 
+    @staticmethod
+    def _best_effort_output_path(info: dict, ydl: YoutubeDL, audio_mode: str) -> str | None:
+        candidates: list[Path] = []
+        requested = info.get("requested_downloads") or []
+        if isinstance(requested, list):
+            for item in requested:
+                if isinstance(item, dict) and item.get("filepath"):
+                    candidates.append(Path(str(item["filepath"])))
+        for key in ("filepath", "_filename"):
+            value = info.get(key)
+            if value:
+                candidates.append(Path(str(value)))
+        try:
+            candidates.append(Path(ydl.prepare_filename(info)))
+        except Exception:
+            pass
+
+        expanded: list[Path] = []
+        for candidate in candidates:
+            expanded.append(candidate)
+            if audio_mode == "mp3":
+                expanded.append(candidate.with_suffix(".mp3"))
+
+        for candidate in expanded:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return str(candidate.resolve())
+            except OSError:
+                continue
+        return None
+
     def download(
         self,
         track: TrackRequest,
@@ -69,6 +100,10 @@ class DownloadEngine:
 
         if track.direct_url:
             url = track.direct_url
+        elif track.resolved_url:
+            url = track.resolved_url
+            if progress_cb:
+                progress_cb(0.0, "Menggunakan kandidat yang sudah dipilih sebelumnya...")
         else:
             track.status = TrackStatus.SEARCHING
             if progress_cb:
@@ -109,18 +144,22 @@ class DownloadEngine:
             elif status == "finished":
                 progress_cb(100.0, "Download selesai, memproses file...")
 
-        prefix = f"{track.index:03d} - "
+        # File identity must not depend on queue order. yt-dlp media ID keeps the
+        # filename stable even when rows are reordered between sessions.
         opts: dict = {
             "format": "bestaudio/best",
-            "outtmpl": str(destination / f"{prefix}%(title).160B [%(id)s].%(ext)s"),
+            "outtmpl": str(destination / "%(title).160B [%(id)s].%(ext)s"),
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
             "windowsfilenames": True,
             "overwrites": False,
             "continuedl": True,
-            "retries": 5,
-            "fragment_retries": 5,
+            # Retry ownership lives in QueueWorker so one failure does not create
+            # nested retry storms inside yt-dlp and the queue scheduler.
+            "retries": 0,
+            "fragment_retries": 0,
+            "extractor_retries": 1,
             "socket_timeout": 15,
             "progress_hooks": [hook],
         }
@@ -145,7 +184,15 @@ class DownloadEngine:
             progress_cb(0.0, "Memulai download...")
 
         with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url, download=True) or {}
+            if info:
+                track.output_path = self._best_effort_output_path(info, ydl, audio_mode)
+
         if stop_event and stop_event.is_set():
             raise DownloadCancelled("Dibatalkan pengguna.")
-        return info or {}
+
+        if info.get("id"):
+            track.metadata["source_media_id"] = str(info["id"])
+        if info.get("extractor_key"):
+            track.metadata["source_extractor"] = str(info["extractor_key"])
+        return info
