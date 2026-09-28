@@ -33,7 +33,28 @@ Tool portable saat Tahap 0:
 
 Kekurangan reproduksibilitas tool tersebut merupakan pekerjaan Tahap 6/F18, bukan diperbaiki pada Tahap 0.
 
-## 3. Regression gate yang ditambahkan
+## 3. Hasil CI Tahap 0
+
+PR Tahap 0 menjalankan workflow CI run `36376891023` dan lulus.
+
+Versi aktual yang direkam pada run tersebut:
+
+- Python `3.11.16`
+- pip `26.2.1`
+- `PySide6==6.11.2`
+- `yt-dlp==2026.8.19`
+- `spotdl==4.5.2`
+- `yt-dlp-ejs==0.8.0`
+- `pytest==9.1.1`
+
+Hasil verifikasi:
+
+- compileall: lulus;
+- UI smoke `main_window_v3`: lulus (`UI_V3_SMOKE_OK`);
+- pytest: `13 passed, 7 xfailed, 1 warning`;
+- tidak ada XPASS dan tidak ada regression fixture yang berubah menjadi setup/import error.
+
+## 4. Regression gate yang ditambahkan
 
 File `tests/test_stage0_regressions.py` menambahkan fixture deterministik untuk temuan berikut:
 
@@ -51,7 +72,7 @@ Marker `xfail(strict=True)` sengaja dipakai untuk bug baseline yang belum diperb
 
 Tes bukan sekadar memeriksa keberadaan nama fungsi/string; masing-masing mengeksekusi jalur perilaku yang bermasalah dengan fake/mocking deterministik tanpa akses jaringan.
 
-## 4. F17 awal — CI dan smoke produksi
+## 5. F17 awal — CI dan smoke produksi
 
 Perubahan CI Tahap 0:
 
@@ -60,15 +81,15 @@ Perubahan CI Tahap 0:
 3. Pytest dijalankan dengan ringkasan XFAIL/XPASS (`-rxX`) agar regression gate terlihat di log.
 4. Compileall tetap dipertahankan, tetapi bukan dianggap bukti Tahap 0 selesai.
 
-## 5. Batas verifikasi Tahap 0
+## 6. Batas verifikasi Tahap 0
 
 Tahap 0 hanya membangun baseline dan regression gate. Tahap ini **tidak** mengklaim F01/F03/F05/F08/F10/F12 sudah diperbaiki.
 
 Live Spotify, Gemini, YouTube download, dan executable Windows tidak dijadikan syarat regression fixture karena tes deterministik harus dapat berjalan tanpa layanan eksternal. Build/frozen Windows tetap diverifikasi oleh workflow terpisah pada tahapan rilis.
 
-## 6. Gate Tahap 0
+## 7. Gate Tahap 0
 
-Tahap 0 dianggap lolos bila:
+Tahap 0 dianggap lolos karena:
 
 - source branch berasal dari HEAD terbaru yang sudah dicocokkan dengan baseline Astra;
 - smoke CI memakai UI v3 produksi;
