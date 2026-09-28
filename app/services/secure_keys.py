@@ -3,15 +3,20 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import sys
 from ctypes import wintypes
 from pathlib import Path
 from uuid import uuid4
 
-from app.config import app_root
-
 
 class SecureKeyStoreError(RuntimeError):
     pass
+
+
+def _default_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
 
 
 def clean_keys(values: object) -> list[str]:
@@ -53,7 +58,7 @@ class WindowsDpapiKeyStore:
     CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
     def __init__(self, root: str | Path | None = None) -> None:
-        base = Path(root) if root is not None else app_root()
+        base = Path(root) if root is not None else _default_root()
         self.path = base.expanduser().resolve() / "data" / "gemini_keys.dpapi"
 
     @property
