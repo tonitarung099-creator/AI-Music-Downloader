@@ -48,13 +48,24 @@ jobs:
       - name: Compile Python files
         run: python -m compileall -q .
 
-      - name: UI smoke test - production facade
+      - name: UI DPI smoke - 100 125 150 percent
+        env:
+          PYTHONPATH: .
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          for scale in 1 1.25 1.5; do
+            echo "Testing QT_SCALE_FACTOR=$scale"
+            QT_SCALE_FACTOR="$scale" python -c "from PySide6.QtWidgets import QApplication; from app.ui.production_window import MainWindow; app=QApplication([]); w=MainWindow(); w.resize(1366,768); assert w.minimumWidth() <= 960; assert w.minimumHeight() <= 640; assert w.main_splitter.count() == 3; w.close()"
+          done
+
+      - name: UI smoke test - production facade and 1000 items
         env:
           PYTHONPATH: .
           QT_QPA_PLATFORM: offscreen
         run: |
           python - <<'PY'
           from PySide6.QtWidgets import QApplication
+          from app.models import TrackRequest
           from app.ui.production_window import MainWindow
 
           app = QApplication([])
@@ -62,13 +73,30 @@ jobs:
           assert window.windowTitle() == "AI Music Downloader"
           assert window.minimumWidth() <= 960
           assert window.agent_toggle_btn.text() == "Sembunyikan Gemini"
+          assert window.retry_selected_btn.text() == "Coba Lagi Terpilih"
           window.toggle_agent_panel()
           assert window._right_card.isHidden()
           assert window.agent_toggle_btn.text() == "Tampilkan Gemini"
           window.toggle_agent_panel()
           assert not window._right_card.isHidden()
+
+          batch = [
+              TrackRequest(index=i + 1, query=f"Artist {i} - Song {i}")
+              for i in range(1000)
+          ]
+          window._append_tracks(batch)
+          original_ids = [track.job_id for track in window.tracks]
+          assert window.table.rowCount() == 1000
+          window.queue_search.setText("song 999")
+          visible_rows = [
+              row for row in range(window.table.rowCount())
+              if not window.table.isRowHidden(row)
+          ]
+          assert len(visible_rows) == 1
+          assert window._track_for_row(visible_rows[0]).job_id == batch[999].job_id
+          assert [track.job_id for track in window.tracks] == original_ids
           window.close()
-          print("UI_PRODUCTION_SMOKE_OK")
+          print("UI_PRODUCTION_1000_ITEMS_OK")
           PY
 
       - name: Run tests
