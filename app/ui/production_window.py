@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QCheckBox, QLabel, QMessageBox
+from pathlib import Path
 
-from app.config import ConfigSaveError
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+)
+
+from app.config import ConfigSaveError, app_root
 from app.services.secure_keys import WindowsDpapiKeyStore
 from app.ui.main_window_v3 import MainWindow as Stage4MainWindow
 from app.ui.main_window_v3 import MaskedApiKeysDialog
@@ -48,8 +58,63 @@ class SecureApiKeysDialog(MaskedApiKeysDialog):
             warning_label.setObjectName("muted")
             self.layout().insertWidget(4, warning_label)
 
+        tools = QHBoxLayout()
+        import_btn = QPushButton("Impor TXT")
+        export_btn = QPushButton("Ekspor Daftar Tersamar")
+        import_btn.clicked.connect(self.import_keys)
+        export_btn.clicked.connect(self.export_masked_keys)
+        tools.addWidget(import_btn)
+        tools.addWidget(export_btn)
+        tools.addStretch(1)
+        self.layout().insertLayout(self.layout().count() - 1, tools)
+
     def storage_mode(self) -> str:
         return "session" if self.session_only.isChecked() else "windows_dpapi"
+
+    def import_keys(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Impor API Key Gemini",
+            str(app_root()),
+            "Teks (*.txt);;Semua File (*)",
+        )
+        if not filename:
+            return
+        try:
+            lines = Path(filename).read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeError) as exc:
+            QMessageBox.warning(self, "Impor gagal", str(exc))
+            return
+        current = self.keys()
+        self._working_keys = self._clean(current + lines)
+        if self._revealed:
+            self.editor.setPlainText("\n".join(self._working_keys))
+        else:
+            self._show_masked()
+
+    def export_masked_keys(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Ekspor Daftar API Key Tersamar",
+            str(app_root() / "data" / "gemini-keys-masked.txt"),
+            "Teks (*.txt)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.lower() != ".txt":
+            path = path.with_suffix(".txt")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(self._mask(key) for key in self.keys()) + "\n", encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Ekspor gagal", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Ekspor selesai",
+            "Daftar tersamar berhasil disimpan. File ekspor tidak memuat API key lengkap.",
+        )
 
 
 class MainWindow(Stage5UiMixin, Stage4MainWindow):
@@ -70,7 +135,7 @@ class MainWindow(Stage5UiMixin, Stage4MainWindow):
             parent=self,
         )
         dialog.setStyleSheet(self.styleSheet())
-        if dialog.exec() != dialog.Accepted:
+        if dialog.exec() != QDialog.Accepted:
             return
 
         self.config.gemini_api_keys = dialog.keys()
