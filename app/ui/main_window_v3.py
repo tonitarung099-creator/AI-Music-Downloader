@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+from pathlib import Path
+
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMessageBox
 
 from app.agent_worker import AgentCommandWorker
+from app.models import TrackStatus
 from app.ui.main_window_v2 import MainWindow as BaseMainWindow
 
 
@@ -15,6 +19,38 @@ class MainWindow(BaseMainWindow):
         self.agent_worker: AgentCommandWorker | None = None
         self._allow_close = False
         self._shutdown_poll_scheduled = False
+
+        # v2 installs candidate review on double-click. Production v3 broadens
+        # the gesture: review uncertain rows, or open a verified completed file.
+        try:
+            self.table.cellDoubleClicked.disconnect()
+        except RuntimeError:
+            pass
+        self.table.cellDoubleClicked.connect(self._handle_row_double_click)
+
+    def _handle_row_double_click(self, row: int, _column: int) -> None:
+        if row < 0 or row >= len(self.tracks):
+            return
+        track = self.tracks[row]
+        if track.status == TrackStatus.NEEDS_REVIEW:
+            self.review_uncertain(row)
+            return
+        if track.status != TrackStatus.DONE or not track.output_path:
+            return
+
+        target = Path(track.output_path).expanduser()
+        try:
+            valid = target.exists() and target.is_file() and target.stat().st_size > 0
+        except OSError:
+            valid = False
+        if not valid:
+            QMessageBox.warning(
+                self,
+                "File tidak ditemukan",
+                "File audio yang tercatat tidak lagi tersedia di lokasi hasil download.",
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.resolve())))
 
     def run_agent_command(self) -> None:
         command = self.agent_input.toPlainText().strip()

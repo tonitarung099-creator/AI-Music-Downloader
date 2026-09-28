@@ -62,7 +62,6 @@ def test_f01_spotify_resolver_bootstraps_client_before_metadata(monkeypatch):
     assert [track.query for track in tracks] == ["Fixture Artist - Fixture Song"]
 
 
-@KNOWN_STAGE0(reason="F03: kandidat sangat buruk masih diterima bila hanya satu kandidat")
 def test_f03_negative_score_candidate_is_not_silently_accepted(monkeypatch):
     bad = Candidate(
         url="https://www.youtube.com/watch?v=wrong",
@@ -80,7 +79,6 @@ def test_f03_negative_score_candidate_is_not_silently_accepted(monkeypatch):
         engine.resolve_candidate(track)
 
 
-@KNOWN_STAGE0(reason="F03: confidence Gemini 0.0 masih dapat memilih kandidat")
 def test_f03_gemini_rejects_zero_confidence_choice(monkeypatch):
     agent = GeminiAgent(["fixture-key"])
     monkeypatch.setattr(
@@ -162,7 +160,6 @@ def test_f10_parse_command_rejects_invalid_quality_shape(monkeypatch):
     assert result.error
 
 
-@KNOWN_STAGE0(reason="F12: QueueWorker menandai DONE walau downloader tidak menghasilkan file/result valid")
 def test_f12_empty_download_result_must_not_be_marked_done(tmp_path):
     track = TrackRequest(
         index=1,

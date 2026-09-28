@@ -3,12 +3,13 @@ from __future__ import annotations
 from uuid import uuid4
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
 
 from app.config import ConfigSaveError, resolve_output_dir
 from app.controllers.lifecycle import OperationCoordinator
 from app.models import TrackRequest, TrackStatus
 from app.storage import QueueRepository, QueueStorageError
+from app.ui.candidate_review import CandidateReviewDialog
 from app.ui.main_window import MainWindow as BaseMainWindow
 from app.workers import ImportResult, ImportWorker, QueueWorker
 
@@ -25,7 +26,21 @@ class MainWindow(BaseMainWindow):
         self.coordinator = OperationCoordinator()
         self.queue_repo: QueueRepository | None = None
         super().__init__()
+        self._configure_stage3_ui()
         self._open_queue_repository()
+
+    def _configure_stage3_ui(self) -> None:
+        m4a_idx = self.quality_combo.findData("m4a")
+        if m4a_idx >= 0:
+            self.quality_combo.setItemText(m4a_idx, "Utamakan M4A (format bisa berbeda)")
+        mp3_idx = self.quality_combo.findData("mp3")
+        if mp3_idx >= 0:
+            self.quality_combo.setItemText(mp3_idx, "MP3 (konversi kompatibilitas)")
+
+        self.review_btn = QPushButton("Tinjau Kandidat Ragu")
+        self.review_btn.clicked.connect(self.review_uncertain)
+        self.statusBar().addPermanentWidget(self.review_btn)
+        self.table.cellDoubleClicked.connect(lambda row, _column: self.review_uncertain(row))
 
     def _open_queue_repository(self) -> None:
         try:
@@ -40,7 +55,13 @@ class MainWindow(BaseMainWindow):
             return
         BaseMainWindow._append_tracks(self, restored)
         interrupted = sum(1 for track in restored if track.status == TrackStatus.INTERRUPTED)
-        suffix = f" • {interrupted} terinterupsi siap dilanjutkan" if interrupted else ""
+        review = sum(1 for track in restored if track.status == TrackStatus.NEEDS_REVIEW)
+        suffix_parts = []
+        if interrupted:
+            suffix_parts.append(f"{interrupted} terinterupsi siap dilanjutkan")
+        if review:
+            suffix_parts.append(f"{review} perlu ditinjau")
+        suffix = f" • {' • '.join(suffix_parts)}" if suffix_parts else ""
         self.log(f"Memulihkan {len(restored)} item dari antrean sebelumnya{suffix}.")
 
     def import_input(self) -> str | None:
@@ -123,6 +144,14 @@ class MainWindow(BaseMainWindow):
         item = self.table.item(row, 0)
         if item is not None:
             item.setData(Qt.UserRole, track.job_id)
+        if track.status == TrackStatus.NEEDS_REVIEW:
+            self.table.setItem(row, 5, self._detail_item("Double-click atau klik Tinjau Kandidat Ragu"))
+
+    @staticmethod
+    def _detail_item(text: str):
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        return QTableWidgetItem(text)
 
     def _import_thread_finished(self, import_id: str, worker: ImportWorker) -> None:
         was_current = self.coordinator.finish_import(import_id)
@@ -230,6 +259,8 @@ class MainWindow(BaseMainWindow):
         if not pending:
             if all(track.status == TrackStatus.DONE for track in self.tracks):
                 QMessageBox.information(self, "Selesai", "Semua lagu di antrean sudah selesai.")
+            elif any(track.status == TrackStatus.NEEDS_REVIEW for track in self.tracks):
+                self.log("Ada item Perlu Ditinjau. Pilih kandidatnya sebelum melanjutkan item tersebut.")
             else:
                 self.log("Tidak ada item menunggu. Gunakan Retry Gagal untuk item gagal/dibatalkan.")
             return
@@ -246,8 +277,6 @@ class MainWindow(BaseMainWindow):
         self._launch_tracks(pending)
 
     def _on_item_changed(self, job_id, status: str, progress: float, detail: str) -> None:
-        # QueueWorker identifies rows by stable job_id. Keep compatibility with
-        # legacy/manual calls that still pass an integer row.
         if isinstance(job_id, int):
             row = job_id
         else:
@@ -259,11 +288,85 @@ class MainWindow(BaseMainWindow):
             return
         BaseMainWindow._on_item_changed(self, row, status, progress, detail)
 
+    def _on_queue_finished(self, done: int, failed: int, cancelled: int) -> None:
+        BaseMainWindow._on_queue_finished(self, done, failed, cancelled)
+        review = sum(1 for track in self.tracks if track.status == TrackStatus.NEEDS_REVIEW)
+        if review:
+            self.log(f"{review} item belum diunduh karena kandidat perlu ditinjau.")
+            self.header_status.setText(f"Antrean selesai • {review} perlu ditinjau")
+
     def _queue_thread_finished(self) -> None:
         batch_id = self.coordinator.queue_batch_id
         BaseMainWindow._queue_thread_finished(self)
         if batch_id is not None:
             self.coordinator.finish_queue(batch_id)
+
+    def review_uncertain(self, row: int | None = None) -> bool:
+        if self.coordinator.closing:
+            return False
+        if self.queue_worker and self.queue_worker.isRunning():
+            self.log("Tinjau kandidat setelah antrean aktif selesai agar pilihan tidak bertabrakan.")
+            return False
+
+        track: TrackRequest | None = None
+        if isinstance(row, int) and 0 <= row < len(self.tracks):
+            candidate_track = self.tracks[row]
+            if candidate_track.status == TrackStatus.NEEDS_REVIEW:
+                track = candidate_track
+        if track is None:
+            track = next(
+                (item for item in self.tracks if item.status == TrackStatus.NEEDS_REVIEW),
+                None,
+            )
+        if track is None:
+            self.log("Tidak ada item yang perlu ditinjau.")
+            return False
+
+        candidates = track.metadata.get("review_candidates") or []
+        if not isinstance(candidates, list) or not candidates:
+            QMessageBox.warning(
+                self,
+                "Kandidat tidak tersedia",
+                "Data kandidat tidak tersedia. Gunakan Retry Gagal setelah menghapus pilihan lama jika diperlukan.",
+            )
+            return False
+
+        dialog = CandidateReviewDialog(track.display_name, candidates, self)
+        dialog.setStyleSheet(self.styleSheet())
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        selected = dialog.selected_candidate()
+        if not selected:
+            return False
+
+        url = str(selected.get("url") or "").strip()
+        if not url:
+            return False
+        track.resolved_url = url
+        track.resolved_title = str(selected.get("title") or track.display_name)
+        track.metadata["match_state"] = "MATCHED_USER"
+        track.metadata["match_score"] = float(selected.get("score") or 0.0)
+        track.metadata["matched_channel"] = str(selected.get("uploader") or "")
+        track.metadata["matched_versions"] = selected.get("versions") or []
+        track.metadata.pop("review_candidates", None)
+        track.status = TrackStatus.QUEUED
+        track.progress = 0.0
+        track.error = ""
+        track.error_code = ""
+        track.error_retryable = False
+
+        if self.queue_repo is not None:
+            try:
+                self.queue_repo.checkpoint(
+                    track,
+                    event="review_resolved",
+                    detail=f"Kandidat dipilih pengguna: {track.resolved_title}",
+                )
+            except QueueStorageError as exc:
+                self.log(f"Peringatan persistensi review: {exc}")
+        self._on_item_changed(track.job_id, TrackStatus.QUEUED.value, 0.0, "Kandidat dikonfirmasi; siap diunduh")
+        self.log(f"Kandidat dikonfirmasi: {track.display_name} → {track.resolved_title}")
+        return True
 
     def retry_failed(self) -> None:
         if self.coordinator.closing:

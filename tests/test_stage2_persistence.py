@@ -8,7 +8,7 @@ import app.services.downloader as downloader_module
 import app.workers as workers_module
 from app.config import AppConfig
 from app.models import TrackRequest, TrackStatus
-from app.services.downloader import DownloadCancelled, DownloadEngine
+from app.services.downloader import AudioProbe, DownloadCancelled, DownloadEngine, DownloadResult
 from app.services.errors import ErrorKind, classify_exception
 from app.services.gemini_agent import GeminiAgent
 from app.services.identity import canonical_media_key, track_dedup_key
@@ -18,6 +18,22 @@ from app.workers import QueueWorker
 
 def _repo(tmp_path: Path) -> QueueRepository:
     return QueueRepository(tmp_path / "data" / "queue.sqlite3")
+
+
+def _valid_result(tmp_path: Path, source_id: str) -> DownloadResult:
+    path = tmp_path / f"{source_id}.webm"
+    path.write_bytes(b"fixture-audio")
+    return DownloadResult(
+        final_path=str(path),
+        source_id=source_id,
+        source_url=f"https://www.youtube.com/watch?v={source_id}",
+        title=source_id,
+        container="webm",
+        audio_codec="opus",
+        duration=200.0,
+        size_bytes=path.stat().st_size,
+        verified=True,
+    )
 
 
 def test_stage2_restores_100_jobs_and_marks_runtime_states_interrupted(tmp_path):
@@ -30,10 +46,12 @@ def test_stage2_restores_100_jobs_and_marks_runtime_states_interrupted(tmp_path)
     runtime_states = [
         TrackStatus.SEARCHING,
         TrackStatus.DOWNLOADING,
+        TrackStatus.POSTPROCESSING,
+        TrackStatus.VERIFYING,
         TrackStatus.PAUSED,
         TrackStatus.RETRY_WAIT,
     ]
-    for track, status in zip(tracks[:4], runtime_states):
+    for track, status in zip(tracks[:6], runtime_states):
         track.status = status
         track.progress = 37.0
         repo.checkpoint(track, event="fixture_runtime")
@@ -42,8 +60,8 @@ def test_stage2_restores_100_jobs_and_marks_runtime_states_interrupted(tmp_path)
 
     assert len(restored) == 100
     assert [track.job_id for track in restored] == [track.job_id for track in tracks]
-    assert all(track.status == TrackStatus.INTERRUPTED for track in restored[:4])
-    assert all(track.status == TrackStatus.QUEUED for track in restored[4:])
+    assert all(track.status == TrackStatus.INTERRUPTED for track in restored[:6])
+    assert all(track.status == TrackStatus.QUEUED for track in restored[6:])
 
 
 def test_stage2_restore_preserves_resolved_candidate_choice(tmp_path):
@@ -188,7 +206,7 @@ def test_stage2_retry_scope_does_not_run_unrelated_queued_job(tmp_path):
 
     class FixtureEngine:
         def download(self, track, **kwargs):
-            return {"id": track.job_id}
+            return _valid_result(tmp_path, track.job_id)
 
     worker.engine = FixtureEngine()
     worker.run()
@@ -280,7 +298,7 @@ def test_stage2_transient_error_retries_only_with_backoff_budget(tmp_path, monke
             self.calls += 1
             if self.calls == 1:
                 raise TimeoutError("timed out")
-            return {"id": "ok"}
+            return _valid_result(tmp_path, "ok")
 
     engine = TransientEngine()
     worker.engine = engine
@@ -303,6 +321,7 @@ def test_stage2_error_taxonomy_is_conservative():
 
 def test_stage2_output_template_is_not_based_on_queue_index(tmp_path, monkeypatch):
     captured = {}
+    final_path = tmp_path / "Fixture [media123].webm"
 
     class FakeYoutubeDL:
         def __init__(self, opts):
@@ -315,12 +334,24 @@ def test_stage2_output_template_is_not_based_on_queue_index(tmp_path, monkeypatc
             return False
 
         def extract_info(self, url, download=True):
-            return {"id": "media123", "title": "Fixture"}
+            final_path.write_bytes(b"fixture-audio")
+            return {
+                "id": "media123",
+                "title": "Fixture",
+                "filepath": str(final_path),
+                "webpage_url": url,
+            }
 
         def prepare_filename(self, info):
-            return str(tmp_path / "Fixture [media123].webm")
+            return str(final_path)
 
     monkeypatch.setattr(downloader_module, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(
+        DownloadEngine,
+        "_probe_audio",
+        lambda self, path: AudioProbe("webm", "opus", 200.0, Path(path).stat().st_size),
+    )
+    monkeypatch.setattr(downloader_module, "apply_audio_tags", lambda *args, **kwargs: "")
     engine = DownloadEngine()
     track = TrackRequest(
         index=999,
@@ -328,7 +359,8 @@ def test_stage2_output_template_is_not_based_on_queue_index(tmp_path, monkeypatc
         direct_url="https://www.youtube.com/watch?v=media123",
     )
 
-    engine.download(track, output_dir=str(tmp_path), audio_mode="original")
+    result = engine.download(track, output_dir=str(tmp_path), audio_mode="original")
 
     assert "999" not in captured["outtmpl"]
     assert "%(id)s" in captured["outtmpl"]
+    assert result.verified is True

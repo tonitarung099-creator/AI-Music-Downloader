@@ -15,6 +15,9 @@ class SpotifyTrack:
     duration: float | None = None
     source_url: str | None = None
     source_id: str | None = None
+    album: str | None = None
+    track_number: int | None = None
+    year: int | None = None
 
     @property
     def query(self) -> str:
@@ -85,8 +88,6 @@ def _ensure_spotify_client(backend: _SpotdlBackend) -> None:
                 cache_path=defaults.get("cache_path"),
             )
         except Exception as exc:
-            # A concurrent caller or another spotDL component may have initialized
-            # the singleton between the probe and init call. Re-probe before failing.
             try:
                 backend.SpotifyClient()
                 return
@@ -134,6 +135,13 @@ def _extract_json_payload(stdout: str) -> Any:
             raise SpotifyResolverError("Format metadata spotDL berubah/tidak dikenali.") from exc
 
 
+def _to_int(value: object) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_track(item: dict[str, Any]) -> SpotifyTrack | None:
     title = str(item.get("name") or item.get("title") or "").strip()
     artists_raw = item.get("artists") or item.get("artist") or []
@@ -158,6 +166,9 @@ def _to_track(item: dict[str, Any]) -> SpotifyTrack | None:
         duration=duration_f,
         source_url=str(item.get("url") or "").strip() or None,
         source_id=str(item.get("song_id") or item.get("id") or "").strip() or None,
+        album=str(item.get("album_name") or item.get("album") or "").strip() or None,
+        track_number=_to_int(item.get("track_number")),
+        year=_to_int(item.get("year")),
     )
 
 
@@ -179,6 +190,9 @@ def _song_to_track(song: Any) -> SpotifyTrack:
         duration=duration,
         source_url=str(getattr(song, "url", "") or "").strip() or None,
         source_id=str(getattr(song, "song_id", "") or "").strip() or None,
+        album=str(getattr(song, "album_name", "") or "").strip() or None,
+        track_number=_to_int(getattr(song, "track_number", None)),
+        year=_to_int(getattr(song, "year", None)),
     )
 
 
