@@ -124,6 +124,7 @@ class MainWindow(Stage5UiMixin, Stage4MainWindow):
         super().__init__()
         self.pause_btn.setText("Lanjutkan" if self._paused else "Jeda")
         self._refresh_agent_status()
+        self.apply_queue_filter()
 
     def manage_api_keys(self) -> None:
         secure_store = WindowsDpapiKeyStore()
