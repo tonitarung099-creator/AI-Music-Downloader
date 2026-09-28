@@ -19,6 +19,7 @@ from app.services.matcher import (
     MatchState,
     candidate_to_dict,
     decide_match,
+    normalize_version_preferences,
     search_youtube,
 )
 
@@ -89,7 +90,20 @@ class DownloadEngine:
         if stop_event and stop_event.is_set():
             raise DownloadCancelled("Dibatalkan pengguna.")
 
-        ranked = search_youtube(track.query, limit=8, expected_duration=track.duration)
+        avoid_versions = normalize_version_preferences(track.metadata.get("avoid_versions"))
+        prefer_versions = normalize_version_preferences(track.metadata.get("prefer_versions"))
+        if avoid_versions:
+            track.metadata["avoid_versions"] = sorted(avoid_versions)
+        if prefer_versions:
+            track.metadata["prefer_versions"] = sorted(prefer_versions)
+
+        ranked = search_youtube(
+            track.query,
+            limit=8,
+            expected_duration=track.duration,
+            avoid_versions=avoid_versions,
+            prefer_versions=prefer_versions,
+        )
         if stop_event and stop_event.is_set():
             raise DownloadCancelled("Dibatalkan pengguna.")
 
@@ -109,7 +123,13 @@ class DownloadEngine:
             return decision.candidate
 
         if self.gemini and self.gemini.available:
-            idx = self.gemini.choose_candidate(track.query, ranked, cancel_event=stop_event)
+            idx = self.gemini.choose_candidate(
+                track.query,
+                ranked,
+                cancel_event=stop_event,
+                avoid_versions=avoid_versions,
+                prefer_versions=prefer_versions,
+            )
             if stop_event and stop_event.is_set():
                 raise DownloadCancelled("Dibatalkan pengguna.")
             if idx is not None:
