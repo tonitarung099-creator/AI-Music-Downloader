@@ -25,6 +25,22 @@ def test_url_routing_uses_real_hostname_and_playlist_query():
     assert _is_youtube_playlist("https://www.youtube.com/watch?v=abc") is False
 
 
+def test_manual_import_does_not_touch_spotify_backend(monkeypatch):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    assert app is not None
+
+    def forbidden_spotify(*args, **kwargs):
+        raise AssertionError("manual input must not call Spotify")
+
+    monkeypatch.setattr(workers_module, "resolve_spotify", forbidden_spotify)
+    worker = ImportWorker("Artist A - Song A\nArtist B - Song B")
+    captured = []
+    worker.tracks_ready.connect(lambda tracks: captured.extend(tracks))
+    worker.run()
+
+    assert [track.query for track in captured] == ["Artist A - Song A", "Artist B - Song B"]
+
+
 def test_playlist_none_entry_is_skipped_without_losing_valid_entries(monkeypatch):
     app = QCoreApplication.instance() or QCoreApplication([])
     assert app is not None
@@ -88,6 +104,24 @@ def test_config_wrong_types_are_sanitized(tmp_path, monkeypatch):
     assert cfg.gemini_model == "gemini-3.8-flash"
     assert cfg.gemini_api_keys == []
     assert cfg.max_retries == 2
+
+
+def test_config_runtime_wrong_types_are_sanitized_on_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "app_root", lambda: tmp_path)
+    cfg = AppConfig()
+    cfg.output_dir = 123  # type: ignore[assignment]
+    cfg.audio_mode = ["mp3"]  # type: ignore[assignment]
+    cfg.gemini_model = {"model": "bad"}  # type: ignore[assignment]
+    cfg.gemini_api_keys = "not-a-list"  # type: ignore[assignment]
+    cfg.max_retries = "many"  # type: ignore[assignment]
+
+    snapshot = cfg.snapshot()
+
+    assert snapshot.output_dir == str((tmp_path / "downloads").resolve())
+    assert snapshot.audio_mode == "original"
+    assert snapshot.gemini_model == "gemini-3.8-flash"
+    assert snapshot.gemini_api_keys == []
+    assert snapshot.max_retries == 2
 
 
 def test_config_save_is_atomic_and_keeps_backup(tmp_path, monkeypatch):
