@@ -32,14 +32,25 @@ class DownloadEngine:
         system = shutil.which("ffmpeg")
         return str(Path(system).parent) if system else None
 
-    def resolve_candidate(self, track: TrackRequest) -> Candidate:
+    def resolve_candidate(
+        self,
+        track: TrackRequest,
+        stop_event: threading.Event | None = None,
+    ) -> Candidate:
+        if stop_event and stop_event.is_set():
+            raise DownloadCancelled("Dibatalkan pengguna.")
+
         ranked = search_youtube(track.query, limit=8, expected_duration=track.duration)
+        if stop_event and stop_event.is_set():
+            raise DownloadCancelled("Dibatalkan pengguna.")
         if not ranked:
             raise RuntimeError("Tidak menemukan kandidat YouTube.")
 
         chosen = ranked[0]
         if is_ambiguous(ranked) and self.gemini and self.gemini.available:
-            idx = self.gemini.choose_candidate(track.query, ranked)
+            idx = self.gemini.choose_candidate(track.query, ranked, cancel_event=stop_event)
+            if stop_event and stop_event.is_set():
+                raise DownloadCancelled("Dibatalkan pengguna.")
             if idx is not None:
                 chosen = ranked[idx]
         return chosen
@@ -62,12 +73,15 @@ class DownloadEngine:
             track.status = TrackStatus.SEARCHING
             if progress_cb:
                 progress_cb(0.0, "Mencari versi terbaik...")
-            candidate = self.resolve_candidate(track)
+            candidate = self.resolve_candidate(track, stop_event=stop_event)
             track.resolved_url = candidate.url
             track.resolved_title = candidate.title
             track.metadata["match_score"] = candidate.score
             track.metadata["matched_channel"] = candidate.uploader
             url = candidate.url
+
+        if stop_event and stop_event.is_set():
+            raise DownloadCancelled("Dibatalkan pengguna.")
 
         destination = Path(output_dir).expanduser().resolve()
         destination.mkdir(parents=True, exist_ok=True)
@@ -107,6 +121,7 @@ class DownloadEngine:
             "continuedl": True,
             "retries": 5,
             "fragment_retries": 5,
+            "socket_timeout": 15,
             "progress_hooks": [hook],
         }
 
@@ -131,4 +146,6 @@ class DownloadEngine:
 
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
+        if stop_event and stop_event.is_set():
+            raise DownloadCancelled("Dibatalkan pengguna.")
         return info or {}

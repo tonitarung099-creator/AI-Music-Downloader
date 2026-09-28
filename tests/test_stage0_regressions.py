@@ -20,7 +20,6 @@ from app.workers import ImportWorker, QueueWorker
 KNOWN_STAGE0 = pytest.mark.xfail(strict=True)
 
 
-@KNOWN_STAGE0(reason="F01: resolver belum bootstrap SpotifyClient sebelum membaca metadata")
 def test_f01_spotify_resolver_bootstraps_client_before_metadata(monkeypatch):
     state = {"initialized": False, "init_calls": 0}
 
@@ -47,10 +46,17 @@ def test_f01_spotify_resolver_bootstraps_client_before_metadata(monkeypatch):
             )
             return SimpleNamespace(name="Fixture Playlist"), [song]
 
-    monkeypatch.setattr(spotify_module, "SpotifyClient", FakeSpotifyClient, raising=False)
-    monkeypatch.setattr(spotify_module, "Playlist", FakePlaylist)
+    backend = spotify_module._SpotdlBackend(
+        Album=object,
+        Playlist=FakePlaylist,
+        Song=object,
+        SpotifyClient=FakeSpotifyClient,
+        SpotifyError=RuntimeError,
+        default_config={"client_id": "fixture", "client_secret": "fixture"},
+    )
+    monkeypatch.setattr(spotify_module, "_load_spotdl_backend", lambda: backend)
 
-    tracks = spotify_module.resolve_spotify("https://open.spotify.com/playlist/stage0")
+    tracks = spotify_module.resolve_spotify("https://open.spotify.com/playlist/stage0", timeout=1)
 
     assert state["init_calls"] == 1
     assert [track.query for track in tracks] == ["Fixture Artist - Fixture Song"]
@@ -80,7 +86,7 @@ def test_f03_gemini_rejects_zero_confidence_choice(monkeypatch):
     monkeypatch.setattr(
         agent,
         "_generate_json",
-        lambda prompt: GeminiResult({"index": 0, "confidence": 0.0, "reason": "tidak yakin"}),
+        lambda prompt, **kwargs: GeminiResult({"index": 0, "confidence": 0.0, "reason": "tidak yakin"}),
     )
     candidates = [
         Candidate(
@@ -94,12 +100,11 @@ def test_f03_gemini_rejects_zero_confidence_choice(monkeypatch):
     assert agent.choose_candidate("Requested Artist - Requested Song", candidates) is None
 
 
-@KNOWN_STAGE0(reason="F05: satu item impor gagal membuang item valid yang sudah diproses")
 def test_f05_import_preserves_valid_rows_when_later_spotify_row_fails(monkeypatch):
     app = QCoreApplication.instance() or QCoreApplication([])
     assert app is not None
 
-    def fail_spotify(url):
+    def fail_spotify(url, **kwargs):
         raise SpotifyResolverError("fixture gagal")
 
     monkeypatch.setattr("app.workers.resolve_spotify", fail_spotify)
@@ -124,7 +129,6 @@ def test_f05_import_preserves_valid_rows_when_later_spotify_row_fails(monkeypatc
     assert captured_errors
 
 
-@KNOWN_STAGE0(reason="F08: config JSON null memicu TypeError saat startup")
 def test_f08_null_config_falls_back_to_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "app_root", lambda: tmp_path)
     (tmp_path / "config.json").write_text("null", encoding="utf-8")
@@ -142,7 +146,7 @@ def test_f10_parse_command_rejects_invalid_quality_shape(monkeypatch):
     monkeypatch.setattr(
         agent,
         "_generate_json",
-        lambda prompt: GeminiResult(
+        lambda prompt, **kwargs: GeminiResult(
             {
                 "intent": "add_and_download",
                 "queries": ["Artist - Song"],

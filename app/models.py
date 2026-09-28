@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from uuid import uuid4
+
+
+def _new_id() -> str:
+    return uuid4().hex
 
 
 class TrackStatus(str, Enum):
@@ -29,6 +34,8 @@ class TrackRequest:
     error: str = ""
     resolved_url: str | None = None
     resolved_title: str | None = None
+    job_id: str = field(default_factory=_new_id)
+    batch_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

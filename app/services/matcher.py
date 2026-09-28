@@ -122,6 +122,9 @@ def search_youtube(query: str, limit: int = 8, expected_duration: float | None =
         "skip_download": True,
         "extract_flat": False,
         "noplaylist": True,
+        "socket_timeout": 15,
+        "retries": 2,
+        "extractor_retries": 1,
     }
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
