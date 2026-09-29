@@ -1,0 +1,45 @@
+AI MUSIC DOWNLOADER - THIRD PARTY NOTICES
+=========================================
+
+Paket portable ini mendistribusikan atau membundel komponen pihak ketiga.
+Hak cipta dan lisensi masing-masing komponen tetap dimiliki pemegang haknya.
+File ini adalah ringkasan sumber lisensi, bukan pengganti teks lisensi upstream.
+
+FFmpeg / ffprobe
+- Project: https://ffmpeg.org/
+- Windows build provider: https://www.gyan.dev/ffmpeg/builds/
+- Legal/licensing: https://ffmpeg.org/legal.html
+- Build yang dipin untuk rilis ini tercatat di release-tools.json dan VERSION_MANIFEST.json.
+
+Deno
+- Project: https://github.com/denoland/deno
+- License: MIT
+- License text: https://github.com/denoland/deno/blob/main/LICENSE.md
+
+PySide6 / Qt for Python
+- Project: https://doc.qt.io/qtforpython-6/
+- Licensing: https://www.qt.io/licensing/open-source-lgpl-obligations
+
+PyInstaller
+- Project: https://pyinstaller.org/
+- License and bootloader exception: https://pyinstaller.org/en/stable/license.html
+
+yt-dlp
+- Project: https://github.com/yt-dlp/yt-dlp
+- License: Unlicense
+
+yt-dlp-ejs
+- Project: https://github.com/yt-dlp/ejs
+- License expression: Unlicense AND MIT AND ISC
+
+spotDL
+- Project: https://github.com/spotDL/spotify-downloader
+- Ikuti file LICENSE pada project upstream untuk syarat lisensi yang berlaku pada versi terbundel.
+
+mutagen dan dependency Python lain
+- Versi dependency teruji dikunci di constraints.lock.txt.
+- Metadata paket Python yang dipakai saat build dicatat di VERSION_MANIFEST.json.
+- Untuk lisensi lengkap tiap dependency, lihat metadata/license upstream dari versi yang tercatat pada manifest.
+
+Catatan penggunaan:
+Aplikasi hanya boleh digunakan untuk media yang pengguna berhak atau diizinkan untuk mengunduh.
