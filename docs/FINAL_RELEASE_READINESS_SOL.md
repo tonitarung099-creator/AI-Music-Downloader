@@ -2,86 +2,101 @@
 
 Tanggal audit final: 29 September 2026  
 Repository: `tonitarung099-creator/AI-Music-Downloader`  
-Baseline rilis yang diaudit: `main` commit `39ee188f50a7bf7066521cade5f3666ede48bf68`
+Baseline kode acceptance-ready: `6604662ce1f54dc32e6a6efa9cb957f675ab0b3d`
 
 ## Status ringkas
 
-**Status engineering: CODE COMPLETE / RELEASE CANDIDATE.**
+**Status engineering: CODE COMPLETE / RELEASE CANDIDATE + PHYSICAL ACCEPTANCE HARNESS READY.**
 
-Master plan Astra Tahap 0–6 sudah diimplementasikan dan seluruh regression gate otomatis pada `main` lulus. Artifact portable Windows dari `main` juga sudah dibangun, diunduh ulang, diverifikasi checksum, dan diaudit struktur/isi dasarnya.
+Master plan Astra Tahap 0–6 sudah diimplementasikan. Tahap 7 menambahkan acceptance harness satu-klik ke paket portable supaya pengguna dapat menguji syarat Windows 11 fisik/non-admin langsung dari ZIP yang sama.
 
-Satu batas yang masih sengaja terbuka adalah **acceptance manual pada laptop fisik clean Windows 11 non-admin dengan jaringan/akun pengguna nyata**. Karena itu dokumen ini tidak mengklaim “pasti bekerja pada setiap laptop Windows”.
+Seluruh gate otomatis pada commit kode `6604662c...` lulus:
+
+- CI regression: **87 passed, 0 failed**;
+- Windows portable build: success;
+- DPAPI Windows smoke: success;
+- frozen runtime/audio self-test: success;
+- checksum tool dan ZIP: success;
+- Unicode/spaces relocation: success;
+- acceptance harness yang dijalankan dari ZIP hasil ekstraksi: success.
+
+Batas yang masih terbuka adalah **eksekusi nyata pada laptop fisik Windows 11 non-admin** dan tiga langkah manual pengguna. CI memakai GitHub-hosted Windows Server 2025, jadi dokumen ini tidak mengklaim mesin fisik tertentu sudah tervalidasi.
 
 ## Penutupan temuan Astra F01–F20
 
 | ID | Temuan Astra | Status final | Tahap utama | Bukti ringkas |
 | --- | --- | --- | --- | --- |
-| F01 | Spotify client belum diinisialisasi | CLOSED | Tahap 1 | lazy import + bootstrap `SpotifyClient` sekali sebelum metadata; regression PASS |
-| F02 | close dapat menghancurkan worker aktif | CLOSED | Tahap 1 | `OperationCoordinator`, cancel/stop worker, close ditunda sampai worker berhenti; tanpa `QThread.terminate()` |
-| F03 | kandidat lagu buruk dapat diterima | CLOSED | Tahap 3 | keputusan `MATCHED / NEEDS_REVIEW / NO_MATCH`, hard floor lokal + confidence Gemini |
-| F04 | antrean hanya di memori | CLOSED | Tahap 2 | SQLite `QueueRepository`, restore job, history, manifest, stable `job_id` |
-| F05 | impor all-or-nothing | CLOSED | Tahap 1 | `ImportResult` per item; item valid dipertahankan ketika item lain gagal |
-| F06 | routing URL memakai substring | CLOSED | Tahap 1 | `urlparse` + validasi hostname/path/query; fake domain/query tidak salah routing |
-| F07 | import/AI/queue race | CLOSED | Tahap 1–2 | `import_id`, `command_id`, `batch_id`, `job_id`, guard operasi konflik, scope berbasis ID |
-| F08 | config rapuh/non-atomic/path tidak konsisten | CLOSED | Tahap 1 | schema/default/range validation, atomic replace + backup, single output resolver |
-| F09 | Gemini retry/cooldown tidak terbatas | CLOSED | Tahap 4 | max 3 transient attempt, timeout 15 s, operation budget 45 s, cooldown/error taxonomy |
-| F10 | perintah AI tidak tervalidasi | CLOSED | Tahap 4 | typed `CommandPlan` + allowlist + typed `CandidateChoice`; invalid schema no-op/error |
-| F11 | normalisasi matching terlalu kasar | CLOSED | Tahap 3 | Unicode dipertahankan, token/version-aware scoring, 32 fixture beranotasi |
-| F12 | DONE belum berarti file valid | CLOSED | Tahap 3 | typed `DownloadResult`, existence/size/ffprobe/audio-stream/duration verification |
-| F13 | kontrak kualitas audio tidak konsisten | CLOSED | Tahap 3 | Original tanpa lossy transcode tambahan; M4A preferred eksplisit; MP3 transcode eksplisit |
-| F14 | stop/pause/timeout tidak menyeluruh | CLOSED* | Tahap 1–2 | stop token, bounded socket/request timeout, cancellable retry/backoff, no-next-job after stop |
-| F15 | retry tidak membedakan error/scope | CLOSED | Tahap 2 | error taxonomy, retry transient konservatif, backoff cancellable, target `job_id` eksplisit |
-| F16 | tidak ada dedup/history/output identity | CLOSED | Tahap 2 | canonical identity, completed manifest, dedup lintas session, filename media-ID stable |
-| F17 | test tidak menutup entrypoint/alur utama | CLOSED | Tahap 0–6 | production facade smoke, behavior regression, 83 test final, Windows frozen gate |
-| F18 | build tidak reproducible/runtime kurang diuji | CLOSED | Tahap 6 | dependency/tool pin, checksum, ffprobe wajib, manifest, frozen audio self-test, relocation smoke |
-| F19 | UI bertumpuk/tidak siap laptop | CLOSED | Tahap 5 | production facade, splitter/collapsible Gemini, 1366×768 + DPI 100/125/150 + 1.000 item smoke |
-| F20 | key/diagnostik berisiko bocor | CLOSED | Tahap 4–5 | masked editor, DPAPI/session-only, redaction, diagnostic ZIP teredaksi, model picker/test |
+| F01 | Spotify client belum diinisialisasi | CLOSED | Tahap 1 | lazy import + bootstrap `SpotifyClient`; regression PASS |
+| F02 | close dapat menghancurkan worker aktif | CLOSED | Tahap 1 | coordinator + cancellation + deferred close |
+| F03 | kandidat lagu buruk dapat diterima | CLOSED | Tahap 3 | `MATCHED / NEEDS_REVIEW / NO_MATCH`, hard floor + confidence |
+| F04 | antrean hanya di memori | CLOSED | Tahap 2 | SQLite, restore, history, manifest, stable `job_id` |
+| F05 | impor all-or-nothing | CLOSED | Tahap 1 | partial per-item import |
+| F06 | routing URL substring | CLOSED | Tahap 1 | `urlparse` + hostname/path/query validation |
+| F07 | import/AI/queue race | CLOSED | Tahap 1–2 | operation IDs + guards + ID-scoped mutations |
+| F08 | config rapuh/non-atomic | CLOSED | Tahap 1 | validation + atomic replace + backup + path resolver |
+| F09 | Gemini retry/cooldown tak terbatas | CLOSED | Tahap 4 | bounded attempts/timeout/budget/cooldown |
+| F10 | AI command tidak tervalidasi | CLOSED | Tahap 4 | typed `CommandPlan`/`CandidateChoice` + allowlist |
+| F11 | normalisasi matching kasar | CLOSED | Tahap 3 | Unicode/version-aware matcher + annotated fixtures |
+| F12 | DONE belum berarti file valid | CLOSED | Tahap 3 | typed result + existence/size/ffprobe/audio verification |
+| F13 | kualitas audio tidak konsisten | CLOSED | Tahap 3 | Original/M4A preferred/MP3 contract eksplisit |
+| F14 | stop/pause/timeout tidak menyeluruh | CLOSED* | Tahap 1–2 | stop token + bounded timeout + cancellable backoff |
+| F15 | retry scope/error tidak jelas | CLOSED | Tahap 2 | taxonomy + transient retry + explicit `job_id` scope |
+| F16 | tidak ada dedup/history/output identity | CLOSED | Tahap 2 | canonical identity + manifest + stable filename |
+| F17 | test tidak menutup alur utama | CLOSED | Tahap 0–7 | production smoke + 87 regression + Windows frozen gate |
+| F18 | build tidak reproducible | CLOSED | Tahap 6 | dependency/tool pin + hash + manifest + real runtime test |
+| F19 | UI tidak siap laptop | CLOSED | Tahap 5 | splitter, 1366×768, DPI 100/125/150, 1.000-item smoke |
+| F20 | key/diagnostik berisiko bocor | CLOSED | Tahap 4–5 | DPAPI/session-only + redaction + safe diagnostics |
 
-`F14` ditandai CLOSED untuk implementasi dan deterministic regression yang diminta. Acceptance live pada postprocessor/network nyata di laptop fisik tetap termasuk acceptance manual eksternal, bukan alasan untuk menahan penutupan bug source yang sudah diperbaiki.
+`F14` CLOSED untuk bug source dan deterministic regression. Pengalaman shutdown/network/postprocess nyata tetap termasuk acceptance fisik, bukan bug source yang masih terbuka.
 
-## Regression final pada `main`
+## Regression final kode
 
-Commit:
+Commit kode:
 
-`39ee188f50a7bf7066521cade5f3666ede48bf68`
+`6604662ce1f54dc32e6a6efa9cb957f675ab0b3d`
 
-CI run `36519823728`:
+CI `main` run `36521993438`:
 
 - compile: PASS;
 - UI DPI 100/125/150: PASS;
 - production UI + 1.000 item: PASS;
-- pytest: **83 passed**;
+- pytest: **87 passed**;
 - conclusion: **success**.
 
-Build Windows Portable run `36519823780`:
+Build Windows Portable `main` run `36521993353`:
 
 - clean checkout: PASS;
 - Windows DPAPI smoke: PASS;
+- FFmpeg/Deno archive pin + SHA-256: PASS;
 - frozen FFmpeg/ffprobe/Deno/audio fixture self-test: PASS;
-- checksum validation: PASS;
-- Unicode + spaces extract/relocate smoke: PASS;
+- ZIP checksum: PASS;
+- Unicode + spaces relocation smoke: PASS;
+- packaged Windows acceptance harness: PASS;
 - artifact upload: PASS;
 - conclusion: **success**.
 
-## Artifact final yang diaudit
+## Artifact acceptance-ready
 
 Artifact name: `AI-Music-Downloader-Portable`  
-Artifact ID: `11012920039`
+Artifact ID: `11012788241`
 
 Outer GitHub artifact:
 
-- size: `212910254` byte;
-- SHA-256: `183575b4bd3f3a67a306c2bec0e16297cb0d0099147aec43facb8c153e3f283a`.
+- size: `212915412` byte;
+- SHA-256: `e2266d5b57b08516aec5f2c1d8f5de1023c831f028cd84ddf783a3539e2523ee`.
 
 Internal portable ZIP:
 
-- size: sekitar `203.0 MiB`;
-- SHA-256: `0526befad586875224926c7add2bc5d337a868c7e13c5c57890078ec3450741b`;
-- sidecar `.sha256`: cocok dengan hash aktual ZIP.
+- size: sekitar `203.1 MiB`;
+- SHA-256: `4bb27ade79bc1e51322d462ba3d7e69e00d8bfc7e668b74788be5e993b02a00b`;
+- sidecar `.sha256`: cocok dengan hash aktual ZIP;
+- `VERSION_MANIFEST.json` menunjuk ke commit kode `6604662ce1f54dc32e6a6efa9cb957f675ab0b3d`.
 
 File wajib yang diverifikasi ada:
 
 - `AI Music Downloader.exe`;
+- `UJI_WINDOWS_11.bat`;
+- `ACCEPTANCE_WINDOWS_11.ps1`;
 - `_internal/`;
 - `tools/ffmpeg.exe`;
 - `tools/ffprobe.exe`;
@@ -93,45 +108,42 @@ File wajib yang diverifikasi ada:
 - `THIRD_PARTY_NOTICES.txt`;
 - `README_PORTABLE.txt`.
 
-Hash tool di file nyata cocok dengan manifest:
+Hash runtime yang diverifikasi terhadap manifest:
 
 - ffmpeg: `227af0691433b703ffc5725e47f7d06eefc34b4a72e7870e73d30e2cda483ecf`;
 - ffprobe: `901f0efe4793cbb0f017101e3427f816e8fbf9a407bd585f49df30f4325cfd88`;
 - Deno: `e020f3e232bd16e33768dee528e5983349c962952051ced0a5d58ad42f5d9b33`.
 
-Artifact privacy/state check:
+## Acceptance Windows 11 fisik
 
-- `config.example.json` memakai `gemini_api_keys: []`;
-- scan file teks tidak menemukan API key Gemini nyata;
-- `queue.sqlite3` memiliki schema tetapi 0 row pada `jobs`, `job_history`, dan `manifest`;
-- tidak ada antrean/history build yang ikut didistribusikan.
+Paket sekarang membawa alur satu-klik:
 
-## Acceptance manual Windows 11 yang masih harus dilakukan
+1. extract seluruh ZIP;
+2. double-click `UJI_WINDOWS_11.bat` sebagai user biasa, **bukan Run as administrator**;
+3. harness otomatis memeriksa Windows 11, non-admin, hash runtime, writable `data`, frozen self-test, dan relocation Unicode/spasi;
+4. laporan disimpan ke `data/acceptance-windows11.json`.
 
-Checklist ini sengaja tidak dipalsukan sebagai CI PASS karena membutuhkan laptop fisik dan akun/jaringan pengguna nyata:
+Setelah tes otomatis PASS, tiga langkah manual tetap harus dijalankan:
 
-1. Gunakan Windows 11 bersih dan login sebagai user biasa/non-admin.
-2. Download artifact portable dari workflow `main` yang sukses.
-3. Verifikasi SHA-256 ZIP terhadap sidecar `.sha256`.
-4. Extract seluruh folder ke path sederhana, lalu jalankan `AI Music Downloader.exe` tanpa install Python/FFmpeg/Deno.
-5. Pastikan UI terbuka normal pada display pengguna.
-6. Tambahkan sedikitnya satu judul manual dan satu URL yang memang pengguna berhak gunakan.
-7. Uji satu proses download yang legal/berizin dan pastikan status `Selesai` hanya muncul setelah file dapat dibuka.
-8. Tutup aplikasi ketika tidak ada worker aktif, buka kembali, dan pastikan queue/history tetap terbaca.
-9. Pindahkan seluruh folder portable ke lokasi lain yang memiliki spasi pada path, lalu buka ulang.
-10. Jika memakai Gemini, pilih mode DPAPI atau session-only, jalankan **Tes Gemini**, lalu pastikan key tidak muncul di `config.json`, log, laporan, atau diagnostic bundle.
-11. Tutup aplikasi saat operasi aktif untuk memvalidasi pengalaman shutdown pada mesin nyata.
-12. Setelah semua PASS, paket layak dinaikkan dari Release Candidate menjadi release stabil untuk mesin pengguna tersebut.
+1. buka GUI dan pastikan tampil normal;
+2. selesaikan satu download media yang memang pengguna berhak/diizinkan unduh dan pastikan file hasil dapat dibuka;
+3. tutup/buka ulang aplikasi dan pastikan antrean, riwayat, serta pengaturan tetap terbaca.
+
+Jika ketiganya PASS pada laptop Windows 11 fisik non-admin, mesin itu melewati acceptance release candidate.
+
+## Privacy acceptance report
+
+`acceptance-windows11.json` tidak menyimpan API key, token, cookie, username, atau nama komputer. Report hanya memuat status check, caption/versi Windows, status elevated, Git SHA manifest, timestamp, dan langkah manual tersisa.
 
 ## Catatan klaim
 
-- Spotify dipakai untuk metadata, bukan untuk membongkar DRM atau mengambil master audio Spotify.
-- Fixture matching yang lulus tidak berarti akurasi 100% terhadap seluruh internet.
-- Banyak Gemini API key tidak berarti kuota menjadi tanpa batas; limit project/provider tetap berlaku.
-- Build otomatis Windows memakai GitHub-hosted Windows Server 2025, bukan laptop fisik Windows 11 pengguna.
+- Spotify dipakai untuk metadata, bukan membongkar DRM atau mengambil master audio Spotify.
+- Fixture matching tidak berarti akurasi 100% terhadap seluruh internet.
+- Banyak Gemini API key tidak berarti kuota tanpa batas.
+- CI acceptance mode pada Windows Server hanya membuktikan harness dan paket bekerja; bukan pengganti Windows 11 fisik non-admin.
 
 ## Kesimpulan
 
-Dari sisi source, regression, CI, Windows frozen build, checksum, portable relocation, privacy artifact, dan penutupan F01–F20, repository berada pada kondisi **release candidate siap acceptance fisik**.
+Dari sisi source, F01–F20, regression, CI, frozen build, checksum, portable relocation, privacy artifact, dan acceptance harness, repository berada pada kondisi **release candidate siap diuji pada Windows 11 fisik**.
 
-Tidak ada temuan Astra F01–F20 yang masih terbuka di source berdasarkan audit final ini. Satu pekerjaan yang tersisa adalah acceptance manual Windows 11 nyata sebagaimana checklist di atas.
+Tidak ada temuan Astra F01–F20 yang masih terbuka di source. Satu pekerjaan eksternal yang tersisa adalah menjalankan `UJI_WINDOWS_11.bat` dan tiga langkah manual pada laptop Windows 11 nyata.

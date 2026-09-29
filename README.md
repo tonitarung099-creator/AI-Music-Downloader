@@ -6,15 +6,17 @@ Aplikasi desktop Windows berbahasa Indonesia untuk mengelola antrean unduh audio
 
 ## Status
 
-Implementasi master plan Astra Tahap 0–6 sudah masuk `main`.
+Implementasi master plan Astra Tahap 0–6 dan hardening acceptance Windows Tahap 7 sudah masuk `main`.
 
 Status rilis saat ini:
 
-- CI regression: 83 test lulus;
+- CI regression: **87 test lulus**;
 - build portable Windows: lulus pada GitHub-hosted Windows Server 2025;
+- acceptance harness dari ZIP hasil build: lulus di CI mode;
 - paket memakai format **portable folder multi-file ZIP**, bukan installer dan bukan single-file EXE;
 - Python, FFmpeg, ffprobe, dan Deno tidak perlu dipasang terpisah pada paket portable;
-- acceptance manual pada laptop fisik clean Windows 11 non-admin masih perlu dilakukan sebelum menyebut kompatibilitas mesin nyata selesai sepenuhnya.
+- paket membawa `UJI_WINDOWS_11.bat` untuk menjalankan acceptance otomatis pada laptop Windows 11 fisik sebagai user non-admin;
+- tiga langkah manual terakhir tetap diperlukan sebelum menyebut mesin pengguna tertentu tervalidasi penuh: buka GUI, lakukan satu download yang memang berhak diunduh, lalu tutup/buka ulang dan cek state pengguna.
 
 Bukti implementasi tiap tahap tersedia di folder [`docs/`](docs/).
 
@@ -46,6 +48,8 @@ Paket portable berisi antara lain:
 ```text
 AI-Music-Downloader-Portable/
 ├─ AI Music Downloader.exe
+├─ UJI_WINDOWS_11.bat
+├─ ACCEPTANCE_WINDOWS_11.ps1
 ├─ _internal/
 ├─ tools/
 │  ├─ ffmpeg.exe
@@ -61,6 +65,26 @@ AI-Music-Downloader-Portable/
 ```
 
 `VERSION_MANIFEST.json` mencatat Git SHA, versi dependency, dan hash tool yang dibundel. Build juga menghasilkan sidecar `.sha256` untuk memverifikasi ZIP rilis.
+
+## Uji Windows 11 fisik
+
+Untuk menguji paket pada laptop Windows 11 nyata:
+
+1. Extract seluruh ZIP.
+2. Double-click **`UJI_WINDOWS_11.bat`** sebagai user biasa. **Jangan** pilih *Run as administrator*.
+3. Tes otomatis memeriksa:
+   - Windows 11 fisik;
+   - proses tidak elevated/admin;
+   - hash FFmpeg, ffprobe, dan Deno terhadap manifest;
+   - folder `data/` dapat ditulis;
+   - frozen `--self-test` tetap bekerja tanpa tool global di PATH;
+   - seluruh paket dapat disalin dan dipindahkan ke path Unicode + spasi;
+   - data sentinel tetap ada setelah relocation;
+   - EXE tetap lulus self-test setelah relocation.
+4. Laporan otomatis tersimpan di `data/acceptance-windows11.json`.
+5. Setelah tes otomatis lulus, lakukan tiga langkah manual yang ditampilkan script: buka GUI, selesaikan satu download yang memang Anda berhak unduh, lalu tutup/buka ulang untuk memastikan antrean/riwayat/pengaturan tetap terbaca.
+
+Workflow CI menjalankan harness yang sama dari ZIP hasil ekstraksi memakai `-CiMode`, tetapi **tidak** mengklaim Windows Server CI sebagai Windows 11 fisik.
 
 ## Gemini dan API key
 
@@ -100,13 +124,15 @@ Untuk build portable gunakan PowerShell:
 ./build_portable.ps1
 ```
 
-Build script mengunduh versi FFmpeg dan Deno yang sudah dipin, memverifikasi SHA-256, membuat frozen EXE, menjalankan self-test runtime/audio lokal, membuat ZIP + checksum, lalu menguji paket setelah extract/relocate pada path Unicode dan spasi.
+Build script mengunduh versi FFmpeg dan Deno yang sudah dipin, memverifikasi SHA-256, membuat frozen EXE, menjalankan self-test runtime/audio lokal, membuat ZIP + checksum, menguji paket setelah extract/relocate pada path Unicode dan spasi, lalu workflow Windows mengeksekusi acceptance harness dari ZIP yang benar-benar akan didistribusikan.
 
 ## Struktur kode utama
 
 ```text
 AI-Music-Downloader/
 ├─ main.py
+├─ ACCEPTANCE_WINDOWS_11.ps1
+├─ UJI_WINDOWS_11.bat
 ├─ app/
 │  ├─ config.py
 │  ├─ models.py
@@ -127,6 +153,10 @@ AI-Music-Downloader/
 
 ## Verifikasi dan batas klaim
 
-CI dan Windows portable gate menguji jalur deterministik, UI smoke, SQLite, matching, Gemini fixtures, DPAPI Windows, frozen runtime, FFmpeg/ffprobe/Deno, audio fixture lokal, checksum, dan relocation portable.
+CI dan Windows portable gate menguji jalur deterministik, UI smoke, SQLite, matching, Gemini fixtures, DPAPI Windows, frozen runtime, FFmpeg/ffprobe/Deno, audio fixture lokal, checksum, relocation portable, dan acceptance harness dari ZIP hasil build.
 
-Hal yang belum diklaim otomatis adalah acceptance end-to-end pada laptop fisik clean Windows 11 non-admin dengan jaringan dan akun pengguna nyata. Checklist acceptance akhir tersedia di `docs/FINAL_RELEASE_READINESS_SOL.md`.
+Artifact acceptance-ready dari commit kode `6604662ce1f54dc32e6a6efa9cb957f675ab0b3d` memiliki ZIP SHA-256:
+
+`4bb27ade79bc1e51322d462ba3d7e69e00d8bfc7e668b74788be5e993b02a00b`
+
+Hal yang belum diklaim otomatis adalah tiga langkah manual end-to-end pada laptop fisik Windows 11 non-admin dengan jaringan dan akun pengguna nyata. Checklist akhir tersedia di `docs/TAHAP_7_ACCEPTANCE_WINDOWS_SOL.md` dan `docs/FINAL_RELEASE_READINESS_SOL.md`.
