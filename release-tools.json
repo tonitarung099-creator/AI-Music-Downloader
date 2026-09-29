@@ -1,0 +1,17 @@
+{
+  "ffmpeg": {
+    "provider": "Gyan FFmpeg release essentials",
+    "version": "9.0",
+    "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0-essentials_build.zip",
+    "checksum_url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0-essentials_build.zip.sha256",
+    "sha256": "e6b54767a6065919048f1a098eb27211ca4e12b4348a05d88777a5855d0b6e71"
+  },
+  "deno": {
+    "provider": "Deno official GitHub release",
+    "version": "2.9.7",
+    "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-pc-windows-msvc.zip",
+    "checksum_url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-pc-windows-msvc.zip.sha256sum",
+    "sha256": "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238"
+  },
+  "self_test_timeout_seconds": 60
+}
