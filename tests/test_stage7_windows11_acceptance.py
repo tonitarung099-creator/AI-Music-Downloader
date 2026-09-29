@@ -20,7 +20,8 @@ def test_acceptance_harness_checks_physical_windows_non_admin_and_runtime():
         "--self-test",
         "physical-acceptance-sentinel.txt",
         "acceptance-windows11.json",
-        "manual_steps_remaining",
+        "manual_checks",
+        "release_ready",
     ]
     for token in required:
         assert token in text

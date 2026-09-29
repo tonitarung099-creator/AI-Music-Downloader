@@ -11,6 +11,7 @@ $DataDir = Join-Path $ScriptRoot "data"
 $DownloadsDir = Join-Path $ScriptRoot "downloads"
 $StartedAt = [DateTime]::UtcNow
 $Checks = New-Object System.Collections.Generic.List[object]
+$ManualChecks = New-Object System.Collections.Generic.List[object]
 
 function Add-Check {
     param([string]$Name, [bool]$Passed, [string]$Detail)
@@ -20,6 +21,33 @@ function Add-Check {
     }
     else {
         Write-Host "[GAGAL] $Name - $Detail" -ForegroundColor Red
+    }
+}
+
+function Add-ManualCheck {
+    param([string]$Id, [string]$Name, [bool]$Passed, [string]$Detail)
+    $ManualChecks.Add([ordered]@{
+        id = $Id
+        name = $Name
+        passed = $Passed
+        detail = $Detail
+        attested_at_utc = [DateTime]::UtcNow.ToString("o")
+    }) | Out-Null
+    if ($Passed) {
+        Write-Host "[MANUAL OK] $Name" -ForegroundColor Green
+    }
+    else {
+        Write-Host "[MANUAL BELUM LULUS] $Name" -ForegroundColor Yellow
+    }
+}
+
+function Read-YesNo {
+    param([string]$PromptText)
+    while ($true) {
+        $Answer = (Read-Host "$PromptText [Y/T]").Trim().ToLowerInvariant()
+        if ($Answer -in @("y", "ya", "yes")) { return $true }
+        if ($Answer -in @("t", "tidak", "n", "no")) { return $false }
+        Write-Host "Jawab Y untuk Ya atau T untuk Tidak." -ForegroundColor Yellow
     }
 }
 
@@ -51,7 +79,7 @@ function Invoke-CheckedProcess {
 
 function Get-IsElevated {
     $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $Principal = New-Object Security.Principal.WindowsPrincipal($Identity)
+    $Principal = New-Object System.Security.Principal.WindowsPrincipal($Identity)
     return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
@@ -81,21 +109,23 @@ function Verify-HashFromManifest {
 }
 
 $Result = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     app = "AI Music Downloader"
+    app_version = $null
     started_at_utc = $StartedAt.ToString("o")
     finished_at_utc = $null
     ci_mode = [bool]$CiMode
     windows = $null
     elevated = $null
     manifest_git_sha = $null
+    manifest_sha256 = $null
+    executable_sha256 = $null
     automated_passed = $false
+    manual_confirmation_required = (-not [bool]$CiMode)
+    manual_checks = $ManualChecks
+    release_ready = $false
+    release_gate_reason = "Belum dievaluasi."
     checks = $Checks
-    manual_steps_remaining = @(
-        "Buka AI Music Downloader.exe dan pastikan GUI tampil normal.",
-        "Masukkan satu media yang memang Anda berhak/diizinkan unduh lalu selesaikan satu download nyata.",
-        "Tutup dan buka kembali aplikasi; pastikan antrean/riwayat/pengaturan tetap terbaca."
-    )
 }
 
 try {
@@ -136,7 +166,15 @@ try {
 
     $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
     $Result.manifest_git_sha = [string]$Manifest.git_sha
+    if ($Manifest.PSObject.Properties.Name -contains "app_version") {
+        $Result.app_version = [string]$Manifest.app_version
+    }
+    $Result.manifest_sha256 = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Result.executable_sha256 = (Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash.ToLowerInvariant()
     Add-Check "Manifest Git SHA" ([bool]$Manifest.git_sha) ([string]$Manifest.git_sha)
+    if ($Result.app_version) {
+        Add-Check "Versi aplikasi" $true ([string]$Result.app_version)
+    }
 
     Verify-HashFromManifest "tools\ffmpeg.exe" ([string]$Manifest.tools.ffmpeg.ffmpeg_sha256) "FFmpeg portable"
     Verify-HashFromManifest "tools\ffprobe.exe" ([string]$Manifest.tools.ffmpeg.ffprobe_sha256) "FFprobe portable"
@@ -191,10 +229,64 @@ try {
 
     Remove-Item -LiteralPath $AcceptanceRoot -Recurse -Force -ErrorAction SilentlyContinue
     $Result.automated_passed = $true
+
+    if ($CiMode) {
+        $Result.release_ready = $false
+        $Result.release_gate_reason = "CI hanya membuktikan acceptance otomatis; CI tidak boleh menggantikan konfirmasi manual pada Windows 11 fisik."
+    }
+    else {
+        Write-Host ""
+        Write-Host "======================================================" -ForegroundColor Cyan
+        Write-Host "TAHAP MANUAL - WAJIB UNTUK PROMOSI KE V1.0.0 STABIL" -ForegroundColor Cyan
+        Write-Host "======================================================" -ForegroundColor Cyan
+        Write-Host "Jawaban Anda akan dicatat sebagai konfirmasi manual di laporan JSON."
+        Write-Host "Jangan jawab Ya bila langkahnya belum benar-benar Anda lakukan."
+        Write-Host ""
+
+        try {
+            Start-Process -FilePath $ExePath -WorkingDirectory $ScriptRoot | Out-Null
+            Add-Check "GUI diluncurkan untuk pemeriksaan manual" $true "Aplikasi dibuka dari paket yang sedang diuji."
+        }
+        catch {
+            Add-Check "GUI diluncurkan untuk pemeriksaan manual" $false $_.Exception.Message
+        }
+
+        $GuiPassed = Read-YesNo "Apakah jendela aplikasi tampil normal tanpa error/blank/overlap berat?"
+        Add-ManualCheck "gui_normal" "GUI tampil normal" $GuiPassed "Konfirmasi langsung pengguna pada Windows 11 fisik."
+
+        $DownloadPassed = $false
+        if ($GuiPassed) {
+            Write-Host ""
+            Write-Host "Di aplikasi yang terbuka, unduh SATU media yang memang Anda berhak/diizinkan unduh." -ForegroundColor Yellow
+            Write-Host "Pastikan status Selesai dan file audio hasilnya benar-benar ada/dapat diputar."
+            $DownloadPassed = Read-YesNo "Apakah satu download nyata berhasil sampai file audio valid?"
+        }
+        Add-ManualCheck "real_download" "Satu download nyata berhasil" $DownloadPassed $(if ($GuiPassed) { "Konfirmasi pengguna setelah download nyata." } else { "Dilewati karena pemeriksaan GUI belum lulus." })
+
+        $PersistencePassed = $false
+        if ($GuiPassed -and $DownloadPassed) {
+            Write-Host ""
+            Write-Host "Sekarang tutup aplikasi sepenuhnya, lalu buka lagi AI Music Downloader.exe." -ForegroundColor Yellow
+            Write-Host "Pastikan antrean/riwayat/pengaturan yang relevan masih terbaca."
+            $PersistencePassed = Read-YesNo "Setelah tutup-buka, apakah data/riwayat/pengaturan tetap terbaca?"
+        }
+        Add-ManualCheck "restart_persistence" "Persistensi setelah tutup-buka" $PersistencePassed $(if ($GuiPassed -and $DownloadPassed) { "Konfirmasi pengguna setelah restart aplikasi." } else { "Dilewati karena langkah manual sebelumnya belum lulus." })
+
+        $AllManualPassed = $GuiPassed -and $DownloadPassed -and $PersistencePassed
+        $Result.release_ready = [bool]($Result.automated_passed -and $AllManualPassed -and $IsWindows11 -and (-not $Elevated))
+        if ($Result.release_ready) {
+            $Result.release_gate_reason = "Acceptance otomatis dan tiga konfirmasi manual Windows 11 fisik lulus."
+        }
+        else {
+            $Result.release_gate_reason = "Acceptance otomatis lulus, tetapi gate manual Windows 11 fisik belum lengkap/lulus."
+        }
+    }
 }
 catch {
     Add-Check "Acceptance otomatis keseluruhan" $false $_.Exception.Message
     $Result.automated_passed = $false
+    $Result.release_ready = $false
+    $Result.release_gate_reason = "Acceptance otomatis gagal: $($_.Exception.Message)"
 }
 finally {
     $Result.finished_at_utc = [DateTime]::UtcNow.ToString("o")
@@ -204,17 +296,32 @@ finally {
     }
     $Result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
     Write-Host ""
-    Write-Host "Laporan acceptance otomatis: $OutputPath"
+    Write-Host "Laporan acceptance: $OutputPath"
+    Write-Host "release_ready=$($Result.release_ready)"
+}
+
+if ($CiMode) {
+    if ($Result.automated_passed) {
+        Write-Host "WINDOWS11_PHYSICAL_ACCEPTANCE_AUTOMATED_OK" -ForegroundColor Green
+        Write-Host "RELEASE_READY_FALSE_CI_MODE" -ForegroundColor Yellow
+        exit 0
+    }
+    Write-Host "WINDOWS11_PHYSICAL_ACCEPTANCE_FAILED" -ForegroundColor Red
+    exit 1
+}
+
+if ($Result.release_ready) {
+    Write-Host "WINDOWS11_PHYSICAL_ACCEPTANCE_FULL_OK" -ForegroundColor Green
+    Write-Host "RELEASE_READY_TRUE" -ForegroundColor Green
+    Write-Host "Kirim data\acceptance-windows11.json bila ingin mempromosikan RC ini menjadi v1.0.0 stabil."
+    exit 0
 }
 
 if ($Result.automated_passed) {
-    Write-Host "WINDOWS11_PHYSICAL_ACCEPTANCE_AUTOMATED_OK" -ForegroundColor Green
-    if (-not $CiMode) {
-        Write-Host ""
-        Write-Host "Tes otomatis lulus. Tiga langkah manual terakhir:" -ForegroundColor Yellow
-        foreach ($Step in $Result.manual_steps_remaining) { Write-Host "- $Step" }
-    }
-    exit 0
+    Write-Host "WINDOWS11_PHYSICAL_ACCEPTANCE_MANUAL_INCOMPLETE" -ForegroundColor Yellow
+    Write-Host "Tes otomatis lulus, tetapi satu atau lebih gate manual belum lulus."
+    exit 2
 }
+
 Write-Host "WINDOWS11_PHYSICAL_ACCEPTANCE_FAILED" -ForegroundColor Red
 exit 1
