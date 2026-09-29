@@ -9,6 +9,8 @@ $ZipPath = Join-Path $ReleaseDir "AI-Music-Downloader-Portable.zip"
 $ZipChecksumPath = "$ZipPath.sha256"
 $ToolPinsPath = Join-Path $Root "release-tools.json"
 $NoticesPath = Join-Path $Root "THIRD_PARTY_NOTICES.txt"
+$AcceptanceScriptPath = Join-Path $Root "ACCEPTANCE_WINDOWS_11.ps1"
+$AcceptanceLauncherPath = Join-Path $Root "UJI_WINDOWS_11.bat"
 
 if (-not (Test-Path $ToolPinsPath)) {
     throw "release-tools.json tidak ditemukan."
@@ -121,6 +123,8 @@ Copy-Item (Join-Path $Root "requirements.txt") (Join-Path $PackageDir "release-i
 Copy-Item (Join-Path $Root "constraints.lock.txt") (Join-Path $PackageDir "release-info\constraints.lock.txt") -Force
 Copy-Item (Join-Path $Root "requirements-build.txt") (Join-Path $PackageDir "release-info\requirements-build.txt") -Force
 Copy-Item $NoticesPath (Join-Path $PackageDir "THIRD_PARTY_NOTICES.txt") -Force
+Copy-Item $AcceptanceScriptPath (Join-Path $PackageDir "ACCEPTANCE_WINDOWS_11.ps1") -Force
+Copy-Item $AcceptanceLauncherPath (Join-Path $PackageDir "UJI_WINDOWS_11.bat") -Force
 
 $PykakasiDb = Join-Path $PackageDir "_internal\pykakasi\data\kanwadict4.db"
 if (-not (Test-Path $PykakasiDb)) {
@@ -199,7 +203,7 @@ foreach ($PackageName in $PackageNames) {
 }
 
 $SourceHashes = [ordered]@{}
-foreach ($SourceFile in @("requirements.txt", "constraints.lock.txt", "requirements-build.txt", "release-tools.json")) {
+foreach ($SourceFile in @("requirements.txt", "constraints.lock.txt", "requirements-build.txt", "release-tools.json", "ACCEPTANCE_WINDOWS_11.ps1", "UJI_WINDOWS_11.bat")) {
     $SourcePath = Join-Path $Root $SourceFile
     $SourceHashes[$SourceFile] = (Get-FileHash $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
@@ -228,6 +232,8 @@ $Manifest = [ordered]@{
     source_lock_sha256 = $SourceHashes
     portable_layout = @(
         "AI Music Downloader.exe",
+        "ACCEPTANCE_WINDOWS_11.ps1",
+        "UJI_WINDOWS_11.bat",
         "_internal/",
         "tools/ffmpeg.exe",
         "tools/ffprobe.exe",
@@ -251,6 +257,12 @@ Cara menjalankan:
 2. Jalankan: AI Music Downloader.exe
 3. Tidak perlu installer, Python, FFmpeg, ffprobe, atau Deno terpasang di Windows.
 4. Jangan memindahkan EXE sendirian; _internal, tools, data, dan file pendamping harus tetap dalam satu folder portable.
+
+Uji acceptance Windows 11 fisik:
+- Double-click UJI_WINDOWS_11.bat sebagai user biasa, BUKAN Run as administrator.
+- Tes otomatis memeriksa Windows 11, non-admin, hash FFmpeg/ffprobe/Deno, self-test EXE, kemampuan tulis data, serta relocation ke path Unicode + spasi.
+- Hasil disimpan di data\acceptance-windows11.json.
+- Setelah tes otomatis lulus, lakukan tiga langkah manual yang ditampilkan: buka GUI, selesaikan satu download yang memang Anda berhak unduh, lalu tutup/buka ulang untuk memastikan antrean/riwayat/pengaturan tetap terbaca.
 
 Folder penting:
 - downloads\  : hasil download default
@@ -291,6 +303,8 @@ Set-Content -Path (Join-Path $PackageDir "README_PORTABLE.txt") -Value $Portable
 
 $Required = @(
     (Join-Path $PackageDir "AI Music Downloader.exe"),
+    (Join-Path $PackageDir "ACCEPTANCE_WINDOWS_11.ps1"),
+    (Join-Path $PackageDir "UJI_WINDOWS_11.bat"),
     (Join-Path $PackageDir "tools\ffmpeg.exe"),
     (Join-Path $PackageDir "tools\ffprobe.exe"),
     (Join-Path $PackageDir "tools\deno.exe"),
