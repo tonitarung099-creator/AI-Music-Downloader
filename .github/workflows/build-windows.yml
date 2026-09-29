@@ -7,6 +7,7 @@ on:
     paths:
       - "app/**"
       - "tests/test_stage6_release.py"
+      - "tests/test_stage7_windows11_acceptance.py"
       - "main.py"
       - "requirements.txt"
       - "requirements-build.txt"
@@ -14,6 +15,8 @@ on:
       - "release-tools.json"
       - "THIRD_PARTY_NOTICES.txt"
       - "config.example.json"
+      - "ACCEPTANCE_WINDOWS_11.ps1"
+      - "UJI_WINDOWS_11.bat"
       - "build_portable.ps1"
       - ".github/workflows/build-windows.yml"
   pull_request:
@@ -21,6 +24,7 @@ on:
     paths:
       - "app/**"
       - "tests/test_stage6_release.py"
+      - "tests/test_stage7_windows11_acceptance.py"
       - "main.py"
       - "requirements.txt"
       - "requirements-build.txt"
@@ -28,6 +32,8 @@ on:
       - "release-tools.json"
       - "THIRD_PARTY_NOTICES.txt"
       - "config.example.json"
+      - "ACCEPTANCE_WINDOWS_11.ps1"
+      - "UJI_WINDOWS_11.bat"
       - "build_portable.ps1"
       - ".github/workflows/build-windows.yml"
 
@@ -108,6 +114,31 @@ jobs:
             throw "Checksum ZIP final tidak cocok. Expected=$Expected Actual=$Actual"
           }
           Write-Host "FINAL_ZIP_SHA256_OK: $Actual"
+
+      - name: Run packaged Windows acceptance harness in CI mode
+        shell: pwsh
+        run: |
+          $Zip = Resolve-Path "release/AI-Music-Downloader-Portable.zip"
+          $Extract = Join-Path $env:RUNNER_TEMP "ai-music-downloader-packaged-acceptance"
+          $Report = Join-Path $env:RUNNER_TEMP "acceptance-windows-ci.json"
+          if (Test-Path $Extract) { Remove-Item $Extract -Recurse -Force }
+          New-Item -ItemType Directory -Path $Extract | Out-Null
+          Expand-Archive -Path $Zip -DestinationPath $Extract -Force
+          $Package = Join-Path $Extract "AI-Music-Downloader-Portable"
+          $Acceptance = Join-Path $Package "ACCEPTANCE_WINDOWS_11.ps1"
+          $Launcher = Join-Path $Package "UJI_WINDOWS_11.bat"
+          if (-not (Test-Path $Acceptance) -or -not (Test-Path $Launcher)) {
+            throw "Acceptance harness tidak ikut di ZIP portable."
+          }
+          & $Acceptance -CiMode -OutputPath $Report
+          if ($LASTEXITCODE -ne 0) {
+            throw "Acceptance harness dari ZIP gagal dengan exit code $LASTEXITCODE"
+          }
+          $Result = Get-Content $Report -Raw | ConvertFrom-Json
+          if (-not $Result.automated_passed) {
+            throw "Acceptance report tidak berstatus automated_passed=true"
+          }
+          Write-Host "PACKAGED_WINDOWS_ACCEPTANCE_HARNESS_OK"
 
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
