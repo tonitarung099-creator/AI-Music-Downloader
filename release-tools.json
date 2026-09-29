@@ -3,7 +3,7 @@
     "provider": "GyanD codexffmpeg GitHub release asset",
     "version": "9.0",
     "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0/ffmpeg-9.0-essentials_build.zip",
-    "checksum_url": "",
+    "checksum_url": "https://api.github.com/repos/GyanD/codexffmpeg/releases/assets/501165133",
     "sha256": "e6b54767a6065919048f1a098eb27211ca4e12b4348a05d88777a5855d0b6e71",
     "asset_id": 501165133
   },
