@@ -10,6 +10,7 @@ on:
       - "tests/test_stage6_release.py"
       - "tests/test_stage7_windows11_acceptance.py"
       - "tests/test_stage8_versioning.py"
+      - "tests/test_stage9_release_gate.py"
       - "main.py"
       - "requirements.txt"
       - "requirements-build.txt"
@@ -29,6 +30,7 @@ on:
       - "tests/test_stage6_release.py"
       - "tests/test_stage7_windows11_acceptance.py"
       - "tests/test_stage8_versioning.py"
+      - "tests/test_stage9_release_gate.py"
       - "main.py"
       - "requirements.txt"
       - "requirements-build.txt"
@@ -166,7 +168,17 @@ jobs:
           if (-not $Result.automated_passed) {
             throw "Acceptance report tidak berstatus automated_passed=true"
           }
+          if ($Result.release_ready) {
+            throw "CI tidak boleh menghasilkan release_ready=true; gate fisik/manual wajib tetap terpisah."
+          }
+          if ($Result.manual_confirmation_required) {
+            throw "Laporan CI tidak boleh meminta interaksi manual."
+          }
+          if (@($Result.manual_checks).Count -ne 0) {
+            throw "CI tidak boleh mengisi manual_checks."
+          }
           Write-Host "PACKAGED_WINDOWS_ACCEPTANCE_HARNESS_OK"
+          Write-Host "CI_RELEASE_GATE_NOT_PROMOTED_OK"
 
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
