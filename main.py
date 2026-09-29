@@ -30,10 +30,11 @@ from PySide6.QtWidgets import QApplication
 
 from app.services.runtime_self_test import RuntimeSelfTestError, run_portable_runtime_self_test
 from app.ui.production_window import MainWindow
+from app.version import APP_NAME, APP_VERSION, version_text
 
 
 def _run_self_test(window: MainWindow) -> int:
-    if window.windowTitle() != "AI Music Downloader":
+    if window.windowTitle() != APP_NAME:
         return 2
 
     if not getattr(sys, "frozen", False):
@@ -51,9 +52,14 @@ def _run_self_test(window: MainWindow) -> int:
 
 
 def main() -> int:
+    if "--version" in sys.argv:
+        print(version_text())
+        return 0
+
     app = QApplication(sys.argv)
-    app.setApplicationName("AI Music Downloader")
-    app.setOrganizationName("AI Music Downloader")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName(APP_NAME)
 
     window = MainWindow()
 
