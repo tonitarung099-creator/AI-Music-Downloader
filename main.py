@@ -34,7 +34,7 @@ from app.version import APP_NAME, APP_VERSION, version_text
 
 
 def _run_self_test(window: MainWindow) -> int:
-    if window.windowTitle() != version_text():
+    if window.windowTitle() != APP_NAME:
         return 2
 
     if not getattr(sys, "frozen", False):
