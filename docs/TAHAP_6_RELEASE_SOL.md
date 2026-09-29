@@ -1,6 +1,6 @@
 # Tahap 6 — Portable Windows dan Release Gate
 
-Status: **implementasi dan gate otomatis selesai** pada PR #7. Acceptance manual pada laptop fisik Windows 11 non-admin belum dijalankan dan tidak diklaim selesai.
+Status: **implementasi dan gate otomatis selesai pada `main`**. Acceptance manual pada laptop fisik Windows 11 non-admin belum dijalankan dan tidak diklaim selesai.
 
 ## Ruang lingkup
 
@@ -41,9 +41,9 @@ Perubahan utama:
 
 Catatan: sumber FFmpeg awal dari URL package Gyan menghasilkan 404 pada gate Windows. PR tidak di-merge. Sumber diperbaiki ke asset rilis GitHub GyanD tag `9.0`, asset ID `501165133`, dengan digest upstream yang sama dengan pin SHA-256 di atas.
 
-## Regression gate
+## Regression gate PR
 
-CI PR #63 pada head `552031de681bff1414b74a759093fa3a2d91f7dd`:
+CI PR terakhir sebelum merge membuktikan:
 
 - Python 3.11.9;
 - compile berhasil;
@@ -51,13 +51,38 @@ CI PR #63 pada head `552031de681bff1414b74a759093fa3a2d91f7dd`:
 - production facade 1.000 item berhasil dan urutan `job_id` tetap stabil;
 - **83 passed, 0 failed**.
 
-## Windows portable gate
+Windows portable gate PR juga lulus sebelum merge, sehingga perubahan tidak masuk `main` dalam keadaan build Windows rusak.
 
-Workflow **Build Windows Portable #20** pada head yang sama selesai `success` di GitHub-hosted Windows Server 2025.
+## Bukti otoritatif setelah merge ke `main`
 
-Bukti penting:
+PR #7 di-merge ke `main` sebagai commit:
 
-- clean checkout: PASS;
+`39ee188f50a7bf7066521cade5f3666ede48bf68`
+
+Dua workflow dijalankan ulang pada commit `main` tersebut, bukan synthetic merge ref PR.
+
+### CI `main`
+
+Workflow run: `36519823728`
+
+Hasil:
+
+- dependency pinned install: PASS;
+- compile Python: PASS;
+- UI DPI smoke 100/125/150%: PASS;
+- production UI + 1.000 item: PASS;
+- pytest: **83 passed in 0.73s**;
+- conclusion: **success**.
+
+### Build Windows Portable `main`
+
+Workflow run: `36519823780`
+
+Runner: GitHub-hosted **Windows Server 2025**.
+
+Hasil:
+
+- clean checkout commit `39ee188f...`: PASS;
 - pinned dependency install: PASS;
 - Windows DPAPI smoke: `WINDOWS_DPAPI_SMOKE_OK`;
 - FFmpeg archive checksum: `FFMPEG_ARCHIVE_SHA256_OK`;
@@ -66,27 +91,62 @@ Bukti penting:
 - extract + relocate pada path Unicode/spasi + restricted PATH: `UNICODE_RELOCATED_PORTABLE_SELF_TEST_OK`;
 - portable build: `PORTABLE_BUILD_OK`;
 - final ZIP checksum verification: PASS;
-- artifact upload: PASS.
+- artifact upload: PASS;
+- conclusion: **success**.
 
-Portable ZIP pada PR gate:
+Artifact otoritatif dari `main`:
 
-- ukuran ZIP internal: sekitar 203.0 MiB;
-- SHA-256 ZIP portable: `5d21bfbe57b8bb5826406918311e19a8f98856ca10101696897b91387f8f3e97`;
-- artifact GitHub: `AI-Music-Downloader-Portable`;
-- artifact ID: `11012168315`;
-- ukuran outer artifact GitHub: `212910196` byte;
-- outer artifact digest: `sha256:d3174ca91b38efb1f5cbb30cafcc0ba8d0fb335103bd32e100a7c13dd2f01fae`.
+- nama artifact: `AI-Music-Downloader-Portable`;
+- artifact ID: `11012920039`;
+- ukuran outer artifact GitHub: `212910254` byte;
+- outer artifact digest: `sha256:183575b4bd3f3a67a306c2bec0e16297cb0d0099147aec43facb8c153e3f283a`;
+- internal portable ZIP: sekitar `203.0 MiB`;
+- internal ZIP SHA-256: `0526befad586875224926c7add2bc5d337a868c7e13c5c57890078ec3450741b`.
 
-`GIT_SHA` yang tercatat dalam artifact PR adalah SHA synthetic merge ref GitHub (`2d131312...`), karena workflow pull request checkout merge ref. Setelah PR di-merge, workflow `main` harus membangun ulang artifact dari commit `main` sebenarnya; SHA manifest dan SHA ZIP final dapat berbeda dan artifact `main` itulah yang menjadi bukti rilis otoritatif.
+`VERSION_MANIFEST.json` di artifact final mencatat Git SHA `39ee188f50a7bf7066521cade5f3666ede48bf68`, sehingga paket final dapat ditelusuri ke commit `main` yang tepat.
+
+## Audit langsung artifact final
+
+Setelah workflow `main` selesai, artifact ID `11012920039` diunduh kembali dan diperiksa sebagai file, bukan hanya berdasarkan status workflow.
+
+Hasil audit:
+
+- outer artifact SHA-256 cocok dengan digest GitHub: `183575b4...f283a`;
+- sidecar `AI-Music-Downloader-Portable.zip.sha256` cocok byte-for-byte dengan ZIP internal;
+- ZIP internal SHA-256 terverifikasi: `0526befa...0741b`;
+- file wajib benar-benar ada:
+  - `AI Music Downloader.exe`;
+  - `tools/ffmpeg.exe`;
+  - `tools/ffprobe.exe`;
+  - `tools/deno.exe`;
+  - `VERSION_MANIFEST.json`;
+  - `THIRD_PARTY_NOTICES.txt`;
+  - `README_PORTABLE.txt`;
+  - `release-info/`;
+  - `data/`;
+  - `downloads/`;
+- hash `ffmpeg.exe`, `ffprobe.exe`, dan `deno.exe` cocok dengan nilai di `VERSION_MANIFEST.json`;
+- `config.example.json` memiliki `gemini_api_keys: []`;
+- scan file teks tidak menemukan pola API key Gemini nyata;
+- `data/queue.sqlite3` hanya berisi schema dengan 0 row pada `jobs`, `job_history`, dan `manifest`, sehingga artifact tidak membawa antrean/riwayat proses build.
+
+Hash tool final yang diverifikasi langsung dari artifact:
+
+- `ffmpeg.exe`: `227af0691433b703ffc5725e47f7d06eefc34b4a72e7870e73d30e2cda483ecf`;
+- `ffprobe.exe`: `901f0efe4793cbb0f017101e3427f816e8fbf9a407bd585f49df30f4325cfd88`;
+- `deno.exe`: `e020f3e232bd16e33768dee528e5983349c962952051ced0a5d58ad42f5d9b33`.
 
 ## Batas verifikasi
 
-Gate otomatis ini menguji Windows melalui **GitHub-hosted Windows Server 2025**, bukan laptop fisik clean Windows 11 yang benar-benar non-admin. Karena itu hasil ini tidak boleh ditulis sebagai “pasti bekerja di setiap laptop Windows”. Acceptance manual Astra yang masih eksternal adalah:
+Gate otomatis ini menguji Windows melalui **GitHub-hosted Windows Server 2025**, bukan laptop fisik clean Windows 11 yang benar-benar non-admin. Karena itu hasil ini tidak boleh ditulis sebagai “pasti bekerja di setiap laptop Windows”.
 
-1. extract artifact `main` pada clean Windows 11 fisik;
+Acceptance manual eksternal yang masih tersisa:
+
+1. extract artifact final pada clean Windows 11 fisik;
 2. jalankan sebagai user non-admin;
 3. verifikasi GUI, import sederhana, dan satu download yang memang pengguna berhak unduh;
 4. pindahkan folder portable lalu buka ulang;
-5. verifikasi queue/config/history pengguna tetap terbaca.
+5. verifikasi queue/config/history pengguna tetap terbaca;
+6. bila memakai Gemini, tes satu key milik pengguna melalui tombol **Tes Gemini** dan pastikan mode DPAPI/session-only sesuai pilihan.
 
-Implementasi kode dan release pipeline Tahap 6 selesai; acceptance fisik Windows 11 tetap dicatat secara eksplisit sebagai langkah manual di luar CI.
+Implementasi kode, regression gate, build pipeline, dan artifact integrity Tahap 6 selesai. Acceptance fisik Windows 11 tetap dicatat secara eksplisit sebagai langkah manual di luar CI.
