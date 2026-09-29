@@ -88,6 +88,7 @@ Write-Host "[1/9] Building one-folder EXE with pinned PyInstaller environment...
     --collect-all spotdl `
     --collect-all yt_dlp `
     --collect-all yt_dlp_ejs `
+    --copy-metadata yt-dlp-ejs `
     --collect-all pykakasi `
     --hidden-import spotdl.types.song `
     --hidden-import spotdl.types.album `
