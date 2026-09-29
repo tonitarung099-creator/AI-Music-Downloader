@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "acceptance_schema_version": 2,
+  "candidate": {
+    "app": "AI Music Downloader",
+    "version": "1.0.0-rc1",
+    "stable_version": "1.0.0",
+    "git_sha": "1a802ec0f7ffd5ade869916e6b0349a6cb8a8d1a",
+    "portable_zip_sha256": "6389c233e5b6ed84549867114e42317cf67c50abe25eeca2b3261ab7039b0657",
+    "manifest_sha256": "287584dfaf19504954f0b26ec52be12cfac39aaf0612123447cb54ad38d23639",
+    "executable_sha256": "5955c9c74cd058ed7f9ca83686fbd4d8cebb8a2efa44bf948470ce64c4da0a11",
+    "github_workflow_run_id": 36525989928,
+    "github_artifact_id": 11014649431,
+    "github_artifact_bundle_sha256": "38aa9d8d08e2729cc2de7b330ece1dad05d1902034d53c34a95cf3022dccc7c0"
+  },
+  "required_manual_checks": [
+    "gui_normal",
+    "real_download",
+    "restart_persistence"
+  ],
+  "required_automated_checks": [
+    "Windows 11 fisik",
+    "User non-admin",
+    "Executable aplikasi",
+    "VERSION_MANIFEST.json",
+    "Manifest Git SHA",
+    "Versi aplikasi",
+    "FFmpeg portable",
+    "FFmpeg portable SHA-256",
+    "FFprobe portable",
+    "FFprobe portable SHA-256",
+    "Deno portable",
+    "Deno portable SHA-256",
+    "Folder data dapat ditulis tanpa admin",
+    "Frozen runtime self-test tanpa tool global",
+    "Data bertahan setelah seluruh folder portable dipindahkan",
+    "Self-test setelah relocation Unicode/spasi"
+  ]
+}
