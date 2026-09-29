@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -29,7 +28,26 @@ _prepare_portable_tools()
 
 from PySide6.QtWidgets import QApplication
 
+from app.services.runtime_self_test import RuntimeSelfTestError, run_portable_runtime_self_test
 from app.ui.production_window import MainWindow
+
+
+def _run_self_test(window: MainWindow) -> int:
+    if window.windowTitle() != "AI Music Downloader":
+        return 2
+
+    if not getattr(sys, "frozen", False):
+        window.close()
+        return 0
+
+    try:
+        run_portable_runtime_self_test(_application_root(), timeout=15.0)
+    except RuntimeSelfTestError:
+        window.close()
+        return 10
+
+    window.close()
+    return 0
 
 
 def main() -> int:
@@ -40,20 +58,7 @@ def main() -> int:
     window = MainWindow()
 
     if "--self-test" in sys.argv:
-        # Verify the frozen package can import the full production UI and can see
-        # the bundled external runtimes required for actual downloads.
-        if window.windowTitle() != "AI Music Downloader":
-            return 2
-        if getattr(sys, "frozen", False):
-            tools = _application_root() / "tools"
-            if not (tools / "ffmpeg.exe").exists():
-                return 3
-            if not (tools / "deno.exe").exists():
-                return 4
-            if shutil.which("deno") is None:
-                return 5
-        window.close()
-        return 0
+        return _run_self_test(window)
 
     window.show()
     return app.exec()
