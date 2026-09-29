@@ -1,10 +1,11 @@
 {
   "ffmpeg": {
-    "provider": "Gyan FFmpeg release essentials",
+    "provider": "GyanD codexffmpeg GitHub release asset",
     "version": "9.0",
-    "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0-essentials_build.zip",
-    "checksum_url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0-essentials_build.zip.sha256",
-    "sha256": "e6b54767a6065919048f1a098eb27211ca4e12b4348a05d88777a5855d0b6e71"
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0/ffmpeg-9.0-essentials_build.zip",
+    "checksum_url": "",
+    "sha256": "e6b54767a6065919048f1a098eb27211ca4e12b4348a05d88777a5855d0b6e71",
+    "asset_id": 501165133
   },
   "deno": {
     "provider": "Deno official GitHub release",
