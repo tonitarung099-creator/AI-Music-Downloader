@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.models import TrackRequest, TrackStatus
 from app.services.gemini_agent import GeminiAgent
+from app.version import version_text
 from app.workers import ImportWorker, QueueWorker
 
 
@@ -150,7 +151,7 @@ class MainWindow(QMainWindow):
         self.queue_worker: QueueWorker | None = None
         self._paused = False
 
-        self.setWindowTitle("AI Music Downloader")
+        self.setWindowTitle(version_text())
         self.resize(1500, 900)
         self.setMinimumSize(1100, 720)
         self.setStyleSheet(APP_STYLE)
@@ -279,330 +280,265 @@ class MainWindow(QMainWindow):
         center_layout.addLayout(queue_head)
 
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["#", "Lagu", "Sumber", "Status", "Progress", "Detail"])
+        self.table.setHorizontalHeaderLabels(["#", "Lagu", "Artis", "Status", "Progres", "Pesan"])
         self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        header_view = self.table.horizontalHeader()
-        header_view.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(1, QHeaderView.Stretch)
-        header_view.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         center_layout.addWidget(self.table, 1)
 
-        self.total_progress = QProgressBar()
-        self.total_progress.setRange(0, 100)
-        self.total_progress.setValue(0)
-        self.total_progress.setFormat("Total %p%")
-        center_layout.addWidget(self.total_progress)
-
         controls = QHBoxLayout()
-        self.start_btn = QPushButton("▶ DOWNLOAD SEMUA")
+        self.start_btn = QPushButton("Mulai Download")
         self.start_btn.setObjectName("primary")
-        self.pause_btn = QPushButton("⏸ Jeda")
-        self.stop_btn = QPushButton("■ Stop")
+        self.pause_btn = QPushButton("Jeda")
+        self.stop_btn = QPushButton("Stop")
         self.stop_btn.setObjectName("danger")
-        open_btn = QPushButton("Buka Folder")
-        retry_btn = QPushButton("Retry Gagal")
-
+        self.retry_btn = QPushButton("Retry Gagal")
         self.start_btn.clicked.connect(self.start_download)
         self.pause_btn.clicked.connect(self.toggle_pause)
         self.stop_btn.clicked.connect(self.stop_download)
-        open_btn.clicked.connect(self.open_output_folder)
-        retry_btn.clicked.connect(self.retry_failed)
-
+        self.retry_btn.clicked.connect(self.retry_failed)
         controls.addWidget(self.start_btn)
         controls.addWidget(self.pause_btn)
         controls.addWidget(self.stop_btn)
+        controls.addWidget(self.retry_btn)
         controls.addStretch(1)
-        controls.addWidget(retry_btn)
-        controls.addWidget(open_btn)
         center_layout.addLayout(controls)
 
         body.addWidget(center, 1)
 
-        # RIGHT: Gemini agent and log
+        # RIGHT: Gemini agent
         right = self._card()
-        right.setMinimumWidth(300)
-        right.setMaximumWidth(360)
+        right.setMinimumWidth(310)
+        right.setMaximumWidth(370)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(14, 14, 14, 14)
         right_layout.setSpacing(10)
 
-        agent_title = QLabel("GEMINI AGENT")
+        agent_head = QHBoxLayout()
+        agent_title = QLabel("AGEN AI GEMINI")
         agent_title.setObjectName("section")
-        right_layout.addWidget(agent_title)
+        self.agent_status = QLabel("Tidak aktif")
+        self.agent_status.setObjectName("muted")
+        agent_head.addWidget(agent_title)
+        agent_head.addStretch(1)
+        agent_head.addWidget(self.agent_status)
+        right_layout.addLayout(agent_head)
 
-        self.agent_status = QLabel()
-        self.agent_status.setWordWrap(True)
-        right_layout.addWidget(self.agent_status)
-
-        keys_btn = QPushButton("Kelola API Key")
-        keys_btn.clicked.connect(self.manage_api_keys)
-        right_layout.addWidget(keys_btn)
+        agent_info = QLabel(
+            "Gemini hanya membantu memahami perintah bahasa manusia atau memilih kandidat sulit. "
+            "Download tetap menggunakan yt-dlp."
+        )
+        agent_info.setWordWrap(True)
+        agent_info.setObjectName("muted")
+        right_layout.addWidget(agent_info)
 
         self.agent_input = QPlainTextEdit()
         self.agent_input.setPlaceholderText(
             "Contoh:\n"
-            "download semua lagu kualitas terbaik, jangan ambil live atau remix"
+            "Download semua lagu di antrean sebagai best audio\n\n"
+            "atau:\n"
+            "Retry yang gagal dan pakai MP3"
         )
-        self.agent_input.setMinimumHeight(150)
+        self.agent_input.setMinimumHeight(180)
         right_layout.addWidget(self.agent_input)
 
-        self.agent_run_btn = QPushButton("Jalankan Perintah")
-        self.agent_run_btn.setObjectName("primary")
-        self.agent_run_btn.clicked.connect(self.run_agent_command)
-        right_layout.addWidget(self.agent_run_btn)
+        run_agent = QPushButton("Jalankan Perintah")
+        run_agent.setObjectName("primary")
+        run_agent.clicked.connect(self.run_agent_command)
+        right_layout.addWidget(run_agent)
 
-        agent_note = QLabel(
-            "Gemini hanya membantu memahami perintah dan matching sulit. "
-            "Engine download tetap dapat berjalan tanpa AI."
-        )
-        agent_note.setWordWrap(True)
-        agent_note.setObjectName("muted")
-        right_layout.addWidget(agent_note)
+        key_row = QHBoxLayout()
+        keys_btn = QPushButton("API Key")
+        test_btn = QPushButton("Tes Gemini")
+        keys_btn.clicked.connect(self.edit_api_keys)
+        test_btn.clicked.connect(self.test_gemini)
+        key_row.addWidget(keys_btn)
+        key_row.addWidget(test_btn)
+        right_layout.addLayout(key_row)
 
-        log_label = QLabel("LOG")
-        log_label.setObjectName("section")
-        right_layout.addWidget(log_label)
-        self.log_box = QPlainTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setMaximumBlockCount(500)
-        right_layout.addWidget(self.log_box, 1)
+        self.agent_log = QPlainTextEdit()
+        self.agent_log.setReadOnly(True)
+        self.agent_log.setPlaceholderText("Log agen Gemini akan muncul di sini.")
+        right_layout.addWidget(self.agent_log, 1)
 
         body.addWidget(right)
 
-    def log(self, message: str) -> None:
-        self.log_box.appendPlainText(message)
-        self.header_status.setText(message[:90])
+    def _append_log(self, text: str) -> None:
+        self.agent_log.appendPlainText(text)
 
     def _refresh_agent_status(self) -> None:
-        if self.gemini.available:
-            self.agent_status.setText(f"● Aktif • {len(self.gemini.api_keys)} API key • {self.gemini.model}")
+        if self.gemini.enabled:
+            self.agent_status.setText(f"Aktif • {len(self.config.gemini_api_keys)} key")
         else:
-            self.agent_status.setText("○ Opsional • belum ada API key Gemini")
+            self.agent_status.setText("Tidak aktif")
 
     def choose_output_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Pilih Folder Download", self.output_edit.text())
+        folder = QFileDialog.getExistingDirectory(self, "Pilih folder output", self.output_edit.text())
         if folder:
             self.output_edit.setText(folder)
-
-    def open_output_folder(self) -> None:
-        path = Path(self.output_edit.text()).expanduser()
-        path.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
-
-    def manage_api_keys(self) -> None:
-        dlg = ApiKeysDialog(self.config.gemini_api_keys, self)
-        dlg.setStyleSheet(APP_STYLE)
-        if dlg.exec() == QDialog.Accepted:
-            self.config.gemini_api_keys = dlg.keys()
-            self.config.save()
-            self.gemini.update_keys(self.config.gemini_api_keys)
-            self._refresh_agent_status()
-            self.log(f"Gemini: {len(self.config.gemini_api_keys)} API key tersimpan.")
 
     def import_input(self) -> None:
         text = self.input_text.toPlainText().strip()
         if not text:
-            QMessageBox.information(self, "Input kosong", "Masukkan URL atau daftar judul lagu terlebih dahulu.")
-            return
-        if self.import_worker and self.import_worker.isRunning():
+            QMessageBox.information(self, "Info", "Masukkan judul lagu atau URL terlebih dahulu.")
             return
 
+        self.header_status.setText("Membaca input...")
         self.add_btn.setEnabled(False)
-        self.log("Membaca input...")
-        self.import_worker = ImportWorker(text, start_index=len(self.tracks) + 1, parent=self)
-        self.import_worker.log.connect(self.log)
-        self.import_worker.failed.connect(self._import_failed)
+        self.import_worker = ImportWorker(text)
         self.import_worker.tracks_ready.connect(self._append_tracks)
+        self.import_worker.error.connect(self._show_error)
         self.import_worker.finished.connect(lambda: self.add_btn.setEnabled(True))
         self.import_worker.start()
 
-    def _import_failed(self, message: str) -> None:
-        self.log(f"Gagal membaca input: {message}")
-        QMessageBox.warning(self, "Gagal membaca input", message)
-
-    def _append_tracks(self, tracks: list[TrackRequest]) -> None:
-        if not tracks:
-            self.log("Tidak ada item baru yang ditemukan.")
-            return
+    def _append_tracks(self, tracks: list) -> None:
         for track in tracks:
             self.tracks.append(track)
-            self._insert_track_row(track)
+            self._append_row(track)
         self.count_label.setText(f"{len(self.tracks)} lagu")
-        self.log(f"{len(tracks)} lagu ditambahkan. Total: {len(self.tracks)}.")
+        self.header_status.setText("Siap")
         self.input_text.clear()
-        self._update_total_progress()
 
-    def _insert_track_row(self, track: TrackRequest) -> None:
+    def _append_row(self, track: TrackRequest) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
-        self.table.setItem(row, 0, QTableWidgetItem(str(track.index)))
-        self.table.setItem(row, 1, QTableWidgetItem(track.display_name))
-        self.table.setItem(row, 2, QTableWidgetItem(track.source))
+        self.table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+        self.table.setItem(row, 1, QTableWidgetItem(track.title))
+        self.table.setItem(row, 2, QTableWidgetItem(track.artist))
         self.table.setItem(row, 3, QTableWidgetItem(track.status.value))
+
         bar = QProgressBar()
         bar.setRange(0, 100)
-        bar.setValue(int(track.progress))
-        bar.setTextVisible(True)
+        bar.setValue(0)
         self.table.setCellWidget(row, 4, bar)
         self.table.setItem(row, 5, QTableWidgetItem(""))
 
     def clear_queue(self) -> None:
         if self.queue_worker and self.queue_worker.isRunning():
-            QMessageBox.information(self, "Sedang download", "Stop download sebelum menghapus antrean.")
+            QMessageBox.warning(self, "Sedang berjalan", "Stop download sebelum menghapus antrean.")
             return
         self.tracks.clear()
         self.table.setRowCount(0)
         self.count_label.setText("0 lagu")
-        self.total_progress.setValue(0)
-        self.log("Antrean dikosongkan.")
 
-    def _save_download_settings(self) -> None:
-        self.config.output_dir = self.output_edit.text().strip() or str(Path.cwd() / "downloads")
+    def start_download(self) -> None:
+        if self.queue_worker and self.queue_worker.isRunning():
+            return
+        if not self.tracks:
+            QMessageBox.information(self, "Info", "Antrean masih kosong.")
+            return
+
+        self.config.output_dir = self.output_edit.text().strip() or "downloads"
         self.config.audio_mode = str(self.quality_combo.currentData())
         self.config.save()
 
-    def start_download(self) -> None:
-        if not self.tracks:
-            QMessageBox.information(self, "Antrean kosong", "Tambahkan lagu ke antrean terlebih dahulu.")
-            return
-        if self.queue_worker and self.queue_worker.isRunning():
-            return
-
-        pending = [t for t in self.tracks if t.status != TrackStatus.DONE]
-        if not pending:
-            QMessageBox.information(self, "Selesai", "Semua lagu di antrean sudah selesai.")
-            return
-
-        self._save_download_settings()
-        self.gemini.model = self.config.gemini_model
-        self.queue_worker = QueueWorker(self.tracks, self.config, self.gemini, parent=self)
+        self.queue_worker = QueueWorker(self.tracks, self.config)
         self.queue_worker.item_changed.connect(self._on_item_changed)
-        self.queue_worker.log.connect(self.log)
-        self.queue_worker.finished_summary.connect(self._on_queue_finished)
-        self.queue_worker.finished.connect(self._queue_thread_finished)
-        self.start_btn.setEnabled(False)
-        self.add_btn.setEnabled(False)
-        self._paused = False
-        self.pause_btn.setText("⏸ Jeda")
-        self.log(f"Mulai download {len(pending)} item...")
+        self.queue_worker.error.connect(self._show_error)
+        self.queue_worker.finished.connect(self._queue_finished)
         self.queue_worker.start()
+        self.header_status.setText("Download berjalan")
+        self.start_btn.setEnabled(False)
 
     def toggle_pause(self) -> None:
         if not self.queue_worker or not self.queue_worker.isRunning():
             return
         self._paused = not self._paused
-        if self._paused:
-            self.queue_worker.pause()
-            self.pause_btn.setText("▶ Lanjut")
-        else:
-            self.queue_worker.resume()
-            self.pause_btn.setText("⏸ Jeda")
+        self.queue_worker.set_paused(self._paused)
+        self.pause_btn.setText("Lanjutkan" if self._paused else "Jeda")
+        self.header_status.setText("Dijeda" if self._paused else "Download berjalan")
 
     def stop_download(self) -> None:
         if self.queue_worker and self.queue_worker.isRunning():
             self.queue_worker.stop()
+            self.header_status.setText("Menghentikan...")
 
     def retry_failed(self) -> None:
-        changed = 0
-        for row, track in enumerate(self.tracks):
-            if track.status in (TrackStatus.FAILED, TrackStatus.CANCELLED):
-                track.status = TrackStatus.QUEUED
-                track.progress = 0.0
-                track.error = ""
-                self._on_item_changed(row, TrackStatus.QUEUED.value, 0.0, "Siap dicoba lagi")
-                changed += 1
-        if changed:
-            self.log(f"{changed} item disiapkan untuk retry.")
-            self.start_download()
-        else:
-            self.log("Tidak ada item gagal untuk di-retry.")
+        for track in self.tracks:
+            if track.status == TrackStatus.FAILED:
+                track.status = TrackStatus.PENDING
+                track.progress = 0
+                track.message = ""
+        self._sync_table()
 
-    def _on_item_changed(self, row: int, status: str, progress: float, detail: str) -> None:
-        if row < 0 or row >= self.table.rowCount():
+    def _queue_finished(self) -> None:
+        self.start_btn.setEnabled(True)
+        self.pause_btn.setText("Jeda")
+        self._paused = False
+        self.header_status.setText("Selesai")
+
+    def _on_item_changed(self, index: int, status: str, progress: float, message: str) -> None:
+        if index < 0 or index >= len(self.tracks):
             return
-        self.table.setItem(row, 3, QTableWidgetItem(status))
-        bar = self.table.cellWidget(row, 4)
+        self.table.setItem(index, 3, QTableWidgetItem(status))
+        bar = self.table.cellWidget(index, 4)
         if isinstance(bar, QProgressBar):
             bar.setValue(max(0, min(100, int(progress))))
-        self.table.setItem(row, 5, QTableWidgetItem(detail))
-        self._update_total_progress()
+        self.table.setItem(index, 5, QTableWidgetItem(message))
 
-    def _update_total_progress(self) -> None:
-        if not self.tracks:
-            self.total_progress.setValue(0)
+    def _sync_table(self) -> None:
+        for i, track in enumerate(self.tracks):
+            self.table.setItem(i, 3, QTableWidgetItem(track.status.value))
+            bar = self.table.cellWidget(i, 4)
+            if isinstance(bar, QProgressBar):
+                bar.setValue(track.progress)
+            self.table.setItem(i, 5, QTableWidgetItem(track.message))
+
+    def edit_api_keys(self) -> None:
+        dialog = ApiKeysDialog(self.config.gemini_api_keys, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        total = sum(max(0.0, min(100.0, t.progress)) for t in self.tracks) / len(self.tracks)
-        self.total_progress.setValue(int(total))
+        self.config.gemini_api_keys = dialog.keys()
+        self.config.save()
+        self.gemini = GeminiAgent(self.config.gemini_api_keys, self.config.gemini_model)
+        self._refresh_agent_status()
+        self._append_log("API key diperbarui.")
 
-    def _on_queue_finished(self, done: int, failed: int, cancelled: int) -> None:
-        self.log(f"Antrean selesai • berhasil {done} • gagal {failed} • dibatalkan {cancelled}")
-        if failed:
-            self.header_status.setText(f"Selesai dengan {failed} kegagalan")
-        else:
-            self.header_status.setText("Antrean selesai")
-
-    def _queue_thread_finished(self) -> None:
-        self.start_btn.setEnabled(True)
-        self.add_btn.setEnabled(True)
-        self._paused = False
-        self.pause_btn.setText("⏸ Jeda")
-        self._update_total_progress()
+    def test_gemini(self) -> None:
+        if not self.gemini.enabled:
+            QMessageBox.information(self, "Gemini", "Belum ada API key Gemini.")
+            return
+        self._append_log("Menguji Gemini...")
+        try:
+            data = self.gemini.parse_command("gunakan kualitas original dan jalankan")
+            self._append_log(f"Tes berhasil: {data}")
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"Tes gagal: {exc}")
 
     def run_agent_command(self) -> None:
         command = self.agent_input.toPlainText().strip()
         if not command:
             return
-        if not self.gemini.available:
-            QMessageBox.information(
-                self,
-                "Gemini belum aktif",
-                "Masukkan API key Gemini terlebih dahulu. Downloader tetap dapat digunakan tanpa Gemini.",
-            )
+        if not self.gemini.enabled:
+            QMessageBox.information(self, "Gemini", "Masukkan API key Gemini terlebih dahulu.")
             return
 
-        self.agent_run_btn.setEnabled(False)
-        self.log("Gemini memahami perintah...")
+        self._append_log(f"> {command}")
         try:
-            result = self.gemini.parse_command(command)
-            if not result.data:
-                self.log(f"Gemini gagal: {result.error}")
-                QMessageBox.warning(self, "Gemini gagal", result.error or "Tidak ada respons valid.")
-                return
+            plan = self.gemini.parse_command(command)
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"Perintah gagal: {exc}")
+            return
 
-            data = result.data
-            quality = data.get("quality")
-            if quality in {"original", "m4a", "mp3"}:
-                idx = self.quality_combo.findData(quality)
-                if idx >= 0:
-                    self.quality_combo.setCurrentIndex(idx)
+        quality = plan.get("quality")
+        if quality in {"original", "m4a", "mp3"}:
+            idx = self.quality_combo.findData(quality)
+            if idx >= 0:
+                self.quality_combo.setCurrentIndex(idx)
 
-            queries = data.get("queries") or []
-            if isinstance(queries, list) and queries:
-                text = "\n".join(str(q).strip() for q in queries if str(q).strip())
-                if text:
-                    self.input_text.setPlainText(text)
-                    self.import_input()
+        if plan.get("retry_failed"):
+            self.retry_failed()
+        if plan.get("start"):
+            self.start_download()
+        self._append_log(f"Rencana: {plan}")
 
-            intent = data.get("intent")
-            note = data.get("note") or "Perintah dipahami."
-            self.log(f"Gemini: {note}")
-
-            if intent == "download_queue":
-                self.start_download()
-            elif intent == "retry_failed":
-                self.retry_failed()
-            elif intent == "add_and_download" and queries:
-                self.log("Lagu ditambahkan; download akan dimulai setelah proses import selesai.")
-        finally:
-            self.agent_run_btn.setEnabled(True)
-
-    def closeEvent(self, event) -> None:  # noqa: N802
-        if self.queue_worker and self.queue_worker.isRunning():
-            self.queue_worker.stop()
-            self.queue_worker.wait(2500)
-        event.accept()
+    def _show_error(self, message: str) -> None:
+        self.header_status.setText("Ada error")
+        QMessageBox.warning(self, "Error", message)
