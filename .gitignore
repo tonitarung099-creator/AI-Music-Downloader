@@ -8,6 +8,8 @@ output/
 downloads/
 data/*.sqlite3
 data/*.sqlite3-*
+data/acceptance-windows11.json
+acceptance-windows11.json
 *.part
 *.ytdl
 *.spotdl
