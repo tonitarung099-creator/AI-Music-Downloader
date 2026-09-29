@@ -6,8 +6,10 @@ on:
     branches: [main]
     paths:
       - "app/**"
+      - "scripts/stamp_release_version.py"
       - "tests/test_stage6_release.py"
       - "tests/test_stage7_windows11_acceptance.py"
+      - "tests/test_stage8_versioning.py"
       - "main.py"
       - "requirements.txt"
       - "requirements-build.txt"
@@ -23,8 +25,10 @@ on:
     branches: [main]
     paths:
       - "app/**"
+      - "scripts/stamp_release_version.py"
       - "tests/test_stage6_release.py"
       - "tests/test_stage7_windows11_acceptance.py"
+      - "tests/test_stage8_versioning.py"
       - "main.py"
       - "requirements.txt"
       - "requirements-build.txt"
@@ -74,6 +78,7 @@ jobs:
           python --version
           python -m pip --version
           python -c "from importlib.metadata import version; print('PyInstaller==' + version('pyinstaller')); print('yt-dlp==' + version('yt-dlp')); print('yt-dlp-ejs==' + version('yt-dlp-ejs')); print('spotdl==' + version('spotdl'))"
+          python -c "from app.version import version_text; print(version_text())"
 
       - name: Test Windows DPAPI key store
         shell: pwsh
@@ -100,6 +105,13 @@ jobs:
         shell: pwsh
         run: ./build_portable.ps1
 
+      - name: Stamp application version into portable ZIP
+        shell: pwsh
+        run: |
+          python scripts/stamp_release_version.py `
+            release/AI-Music-Downloader-Portable.zip `
+            release/AI-Music-Downloader-Portable.zip.sha256
+
       - name: Verify ZIP checksum sidecar and manifest
         shell: pwsh
         run: |
@@ -114,6 +126,22 @@ jobs:
             throw "Checksum ZIP final tidak cocok. Expected=$Expected Actual=$Actual"
           }
           Write-Host "FINAL_ZIP_SHA256_OK: $Actual"
+
+          $Extract = Join-Path $env:RUNNER_TEMP "ai-music-downloader-version-check"
+          if (Test-Path $Extract) { Remove-Item $Extract -Recurse -Force }
+          New-Item -ItemType Directory -Path $Extract | Out-Null
+          Expand-Archive -Path $Zip -DestinationPath $Extract -Force
+          $Package = Join-Path $Extract "AI-Music-Downloader-Portable"
+          $Manifest = Get-Content (Join-Path $Package "VERSION_MANIFEST.json") -Raw | ConvertFrom-Json
+          $VersionText = (Get-Content (Join-Path $Package "VERSION.txt") -Raw).Trim()
+          $ExpectedVersion = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
+          if ($Manifest.app_version -ne $ExpectedVersion) {
+            throw "app_version manifest tidak cocok. Expected=$ExpectedVersion Actual=$($Manifest.app_version)"
+          }
+          if ($VersionText -ne "AI Music Downloader v$ExpectedVersion") {
+            throw "VERSION.txt tidak cocok: $VersionText"
+          }
+          Write-Host "RELEASE_VERSION_METADATA_OK: $ExpectedVersion"
 
       - name: Run packaged Windows acceptance harness in CI mode
         shell: pwsh
